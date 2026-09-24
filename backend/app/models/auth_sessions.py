@@ -1,4 +1,4 @@
-"""SQL for ``auth_sessions`` — the refresh-token store (server/src/db/authSessions.db.js).
+"""SQL for ``auth_sessions`` — the refresh-token store.
 
 Only the SHA-256 hash of a refresh token is ever stored, so a database leak
 does not hand over live sessions.
@@ -10,7 +10,7 @@ from ..extensions import query, query_one, transaction
 def create(*, user_id, token_hash, user_agent, ip_address, expires_at):
     return query_one(
         """INSERT INTO auth_sessions (user_id, token_hash, user_agent, ip_address, expires_at)
-           VALUES ($1, $2, $3, $4::inet, $5)
+           VALUES ($1, $2, $3, $4, $5)
            RETURNING id, user_id, expires_at, created_at""",
         [user_id, token_hash, user_agent, ip_address, expires_at],
     )
@@ -51,7 +51,7 @@ def rotate(*, old_token_hash, user_id, token_hash, user_agent, ip_address, expir
         tx.query("UPDATE auth_sessions SET revoked_at = now() WHERE token_hash = $1", [old_token_hash])
         return tx.query_one(
             """INSERT INTO auth_sessions (user_id, token_hash, user_agent, ip_address, expires_at)
-               VALUES ($1, $2, $3, $4::inet, $5)
+               VALUES ($1, $2, $3, $4, $5)
                RETURNING id, user_id, expires_at""",
             [user_id, token_hash, user_agent, ip_address, expires_at],
         )

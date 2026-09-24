@@ -1,17 +1,19 @@
-"""SQL for flashcards and per-user SM-2 reviews (server/src/db/flashcards.db.js)."""
+"""SQL for flashcards and per-user SM-2 reviews."""
 
 from ..extensions import query, query_one, transaction
+from .quiz import upsert_topic
 
 CARD_SELECT = """
   SELECT f.id, f.study_kit_id, f.source_id, f.term, f.definition, f.hint,
          f.language, f.position, f.generated_by_ai,
-         COALESCE(r.ease_factor, 2.50)::float AS ease_factor,
-         COALESCE(r.interval_days, 0)::int AS interval_days,
-         COALESCE(r.repetitions, 0)::int AS repetitions,
-         COALESCE(r.lapses, 0)::int AS lapses,
-         COALESCE(r.due_at, f.created_at) AS due_at,
+         CAST(COALESCE(r.ease_factor, 2.50) AS REAL) AS ease_factor,
+         CAST(COALESCE(r.interval_days, 0) AS INTEGER) AS interval_days,
+         CAST(COALESCE(r.repetitions, 0) AS INTEGER) AS repetitions,
+         CAST(COALESCE(r.lapses, 0) AS INTEGER) AS lapses,
+         COALESCE(r.due_at, f.created_at) AS "due_at [TIMESTAMPTZ]",
          r.last_reviewed_at"""
 
+# The owner, or a student actively enrolled in the class the kit is shared to.
 _ACCESS = """(k.user_id = $1 OR EXISTS (
     SELECT 1 FROM class_enrollments ce
      WHERE ce.class_id = k.class_id AND ce.user_id = $1 AND ce.status = 'active'
@@ -21,19 +23,12 @@ _ACCESS = """(k.user_id = $1 OR EXISTS (
 def save_generated(*, cache_id, source, cards, language):
     with transaction() as tx:
         for position, card in enumerate(cards):
-            topic_id = None
-            if card.get("topic"):
-                topic_id = tx.query_one(
-                    """INSERT INTO topics (study_kit_id, name) VALUES ($1, $2)
-                       ON CONFLICT (study_kit_id, name) WHERE study_kit_id IS NOT NULL
-                       DO UPDATE SET name = EXCLUDED.name RETURNING id""",
-                    [source["study_kit_id"], card["topic"]],
-                )["id"]
+            topic_id = upsert_topic(tx, source["study_kit_id"], card["topic"])["id"] if card.get("topic") else None
             tx.query(
                 """INSERT INTO flashcards
                      (study_kit_id, user_id, source_id, topic_id, generation_cache_id,
                       term, definition, hint, language, position, generated_by_ai)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1)
                    ON CONFLICT (generation_cache_id, position) WHERE generation_cache_id IS NOT NULL
                    DO NOTHING""",
                 [source["study_kit_id"], source["user_id"], source["id"], topic_id, cache_id,
@@ -59,8 +54,8 @@ def due(*, user_id, limit, kit_id=None, source_id=None):
              JOIN study_kits k ON k.id = f.study_kit_id
              LEFT JOIN flashcard_reviews r ON r.flashcard_id = f.id AND r.user_id = $1
             WHERE {_ACCESS}
-              AND ($3::uuid IS NULL OR f.study_kit_id = $3)
-              AND ($4::uuid IS NULL OR f.source_id = $4)
+              AND ($3 IS NULL OR f.study_kit_id = $3)
+              AND ($4 IS NULL OR f.source_id = $4)
               AND COALESCE(r.due_at, f.created_at) <= now()
             ORDER BY COALESCE(r.due_at, f.created_at), f.position
             LIMIT $2""",
@@ -72,18 +67,18 @@ def review(*, user_id, flashcard_id, quality, reviewed_at, calculate):
     with transaction() as tx:
         card = tx.query_one(
             """SELECT f.id FROM flashcards f JOIN study_kits k ON k.id = f.study_kit_id
-                WHERE f.id = $1 AND (k.user_id = $2 OR EXISTS (
+                WHERE f.id = $2 AND (k.user_id = $1 OR EXISTS (
                   SELECT 1 FROM class_enrollments ce
-                   WHERE ce.class_id = k.class_id AND ce.user_id = $2 AND ce.status = 'active'
+                   WHERE ce.class_id = k.class_id AND ce.user_id = $1 AND ce.status = 'active'
                 ))""",
-            [flashcard_id, user_id],
+            [user_id, flashcard_id],
         )
         if not card:
             return None
 
         current = tx.query_one(
-            """SELECT ease_factor::float, interval_days, repetitions, lapses
-                 FROM flashcard_reviews WHERE user_id = $1 AND flashcard_id = $2 FOR UPDATE""",
+            """SELECT CAST(ease_factor AS REAL) AS ease_factor, interval_days, repetitions, lapses
+                 FROM flashcard_reviews WHERE user_id = $1 AND flashcard_id = $2""",
             [user_id, flashcard_id],
         )
         state = current and {
@@ -100,10 +95,10 @@ def review(*, user_id, flashcard_id, quality, reviewed_at, calculate):
                   repetitions, lapses, due_at, last_reviewed_at)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                ON CONFLICT (user_id, flashcard_id) DO UPDATE SET
-                 quality = EXCLUDED.quality, ease_factor = EXCLUDED.ease_factor,
-                 interval_days = EXCLUDED.interval_days, repetitions = EXCLUDED.repetitions,
-                 lapses = EXCLUDED.lapses, due_at = EXCLUDED.due_at,
-                 last_reviewed_at = EXCLUDED.last_reviewed_at
+                 quality = excluded.quality, ease_factor = excluded.ease_factor,
+                 interval_days = excluded.interval_days, repetitions = excluded.repetitions,
+                 lapses = excluded.lapses, due_at = excluded.due_at,
+                 last_reviewed_at = excluded.last_reviewed_at
                RETURNING *""",
             [user_id, flashcard_id, quality, nxt["easeFactor"], nxt["intervalDays"], nxt["repetitions"],
              nxt["lapses"], nxt["dueAt"], nxt["lastReviewedAt"]],
@@ -111,4 +106,4 @@ def review(*, user_id, flashcard_id, quality, reviewed_at, calculate):
 
 
 def find_cache_cards(cache_id):
-    return query_one("SELECT count(*)::int AS count FROM flashcards WHERE generation_cache_id = $1", [cache_id])
+    return query_one("SELECT count(*) AS count FROM flashcards WHERE generation_cache_id = $1", [cache_id])

@@ -1,7 +1,8 @@
-"""SQL for mock exam question banks (server/src/db/mockExam.db.js)."""
+"""SQL for mock exam question banks."""
 
 from ..extensions import query, query_one, transaction
 from ..utils.serialization import dumps
+from .quiz import upsert_topic
 
 
 def save_bank(*, cache_id, source, exam, params, model):
@@ -12,9 +13,9 @@ def save_bank(*, cache_id, source, exam, params, model):
                  (study_kit_id, source_id, generation_cache_id, title, language, question_count)
                VALUES ($1, $2, $3, $4, $5, $6)
                ON CONFLICT (generation_cache_id) WHERE generation_cache_id IS NOT NULL
-               DO UPDATE SET title = EXCLUDED.title,
-                             language = EXCLUDED.language,
-                             question_count = EXCLUDED.question_count
+               DO UPDATE SET title = excluded.title,
+                             language = excluded.language,
+                             question_count = excluded.question_count
                RETURNING id""",
             [source["study_kit_id"], source["id"], cache_id, f"{exam['title']} ({model})", params["language"],
              len(exam["questions"])],
@@ -23,15 +24,7 @@ def save_bank(*, cache_id, source, exam, params, model):
 
         for index, question in enumerate(exam["questions"]):
             # Topics are shared with the quiz feature so mastery tracks one set of labels.
-            topic = (
-                tx.query_one(
-                    """INSERT INTO topics (study_kit_id, name) VALUES ($1, $2)
-                       ON CONFLICT (study_kit_id, name) WHERE study_kit_id IS NOT NULL
-                       DO UPDATE SET name = EXCLUDED.name RETURNING id""",
-                    [source["study_kit_id"], question["topic"]],
-                )
-                if question.get("topic") else None
-            )
+            topic = upsert_topic(tx, source["study_kit_id"], question["topic"]) if question.get("topic") else None
             tx.query(
                 """INSERT INTO mock_exam_questions
                      (bank_id, topic_id, position, kind, prompt, options, correct_answer,
@@ -55,7 +48,7 @@ def bank_questions(*, user_id, kit_id, source_id=None):
              JOIN mock_exam_banks b ON b.id = q.bank_id
              JOIN study_kits k ON k.id = b.study_kit_id
             WHERE b.study_kit_id = $1 AND k.user_id = $2
-              AND ($3::uuid IS NULL OR b.source_id = $3::uuid)
+              AND ($3 IS NULL OR b.source_id = $3)
             ORDER BY q.position""",
         [kit_id, user_id, source_id],
     ).rows

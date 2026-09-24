@@ -2,9 +2,8 @@
 
 import datetime as dt
 import logging
+import sqlite3
 import time
-
-from psycopg import errors as pg_errors
 
 from ..config import config
 from ..extensions import query
@@ -23,8 +22,11 @@ def check():
         # Newest applied migration, or None before the first migrate run.
         rows = query("SELECT version, applied_at FROM schema_migrations ORDER BY version DESC LIMIT 1").rows
         migrations = rows[0] if rows else None
-    except pg_errors.UndefinedTable:
-        migrations = None
+    except sqlite3.OperationalError as err:
+        if database == "up" and "no such table" in str(err):
+            migrations = None
+        else:
+            log.error("[health] database unreachable: %s", err)
     except Exception as err:
         if database == "down":
             log.error("[health] database unreachable: %s", err)

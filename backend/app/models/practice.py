@@ -1,26 +1,27 @@
-"""SQL for practice sessions and mock exams (server/src/db/practice.db.js)."""
+"""SQL for practice sessions and mock exams."""
 
 import datetime as dt
 
-from ..extensions import query, query_one, transaction
+from ..extensions import json_param, query, query_one, transaction
 from ..utils.js import is_integer, js_round, js_string
 from ..utils.serialization import dumps
+from ._time import start_of_week
 
 
 def topics(*, user_id, q=None, source_id=None):
     """``source_id`` narrows the list to the topics that one file produced questions for."""
     return query(
         """SELECT t.id, t.study_kit_id, t.name,
-                  COALESCE(m.mastery_percent, 35)::int AS effective_mastery,
+                  COALESCE(m.mastery_percent, 35) AS effective_mastery,
                   m.mastery_percent,
-                  COALESCE(m.attempts, 0)::int AS attempts
+                  COALESCE(m.attempts, 0) AS attempts
              FROM topics t JOIN study_kits k ON k.id = t.study_kit_id
              LEFT JOIN user_topic_mastery m ON m.topic_id = t.id AND m.user_id = $1
-            WHERE k.user_id = $1 AND ($2::text IS NULL OR t.name ILIKE '%' || $2 || '%')
-              AND ($3::uuid IS NULL OR EXISTS (
+            WHERE k.user_id = $1 AND ($2 IS NULL OR ilike(t.name, '%' || $2 || '%'))
+              AND ($3 IS NULL OR EXISTS (
                     SELECT 1 FROM quiz_questions qq
                       JOIN quizzes qz ON qz.id = qq.quiz_id
-                     WHERE qq.topic_id = t.id AND qz.source_id = $3::uuid))
+                     WHERE qq.topic_id = t.id AND qz.source_id = $3))
             ORDER BY COALESCE(m.mastery_percent, 35), t.name""",
         [user_id, q, source_id],
     ).rows
@@ -28,14 +29,12 @@ def topics(*, user_id, q=None, source_id=None):
 
 def create(*, user_id, input, weekly_limit, weighted_order):
     with transaction() as tx:
-        tx.query("SELECT id FROM users WHERE id = $1 FOR UPDATE", [user_id])
         kit = tx.query_one("SELECT id FROM study_kits WHERE id = $1 AND user_id = $2", [input["studyKitId"], user_id])
         if not kit:
             return {"missing": True}
         used = tx.query_one(
-            """SELECT count(*)::int AS count FROM practice_sessions
-                WHERE user_id = $1 AND started_at >= date_trunc('week', now())""",
-            [user_id],
+            "SELECT count(*) AS count FROM practice_sessions WHERE user_id = $1 AND started_at >= $2",
+            [user_id, start_of_week()],
         )["count"]
         if weekly_limit is not None and used >= weekly_limit:
             return {"quotaExceeded": True, "used": used, "limit": weekly_limit}
@@ -77,16 +76,16 @@ def candidate_questions(*, user_id, kit_id, topic_ids, source_id=None, provider)
     """Quiz-pool questions for a session; mock-provider rows are hidden while a real provider is active."""
     return query(
         """SELECT qq.id, qq.topic_id, qq.prompt, qq.options, qq.correct_answer, qq.explanation,
-                  COALESCE(m.mastery_percent, 35)::int AS effective_mastery
+                  COALESCE(m.mastery_percent, 35) AS effective_mastery
              FROM quiz_questions qq JOIN quizzes q ON q.id = qq.quiz_id
              JOIN study_kits k ON k.id = q.study_kit_id
              LEFT JOIN ai_generation_cache c ON c.id = q.generation_cache_id
              LEFT JOIN user_topic_mastery m ON m.topic_id = qq.topic_id AND m.user_id = $1
             WHERE q.study_kit_id = $2 AND k.user_id = $1 AND q.status = 'ready'
-              AND (cardinality($3::uuid[]) = 0 OR qq.topic_id = ANY($3::uuid[]))
-              AND ($4::uuid IS NULL OR q.source_id = $4::uuid)
-              AND ($5::text = 'mock' OR q.generation_cache_id IS NULL OR c.provider <> 'mock')""",
-        [user_id, kit_id, list(topic_ids), source_id, provider],
+              AND (json_array_length($3) = 0 OR qq.topic_id IN (SELECT value FROM json_each($3)))
+              AND ($4 IS NULL OR q.source_id = $4)
+              AND ($5 = 'mock' OR q.generation_cache_id IS NULL OR c.provider <> 'mock')""",
+        [user_id, kit_id, json_param(topic_ids), source_id, provider],
     ).rows
 
 
@@ -122,7 +121,7 @@ def answer(*, user_id, session_id, input):
             """SELECT q.*, s.status FROM practice_session_questions q
                JOIN practice_sessions s ON s.id = q.session_id
                WHERE q.session_id = $1 AND q.position = $2 AND s.user_id = $3
-                 AND (s.expires_at IS NULL OR s.expires_at > now()) FOR UPDATE""",
+                 AND (s.expires_at IS NULL OR s.expires_at > now())""",
             [session_id, input["position"], user_id],
         )
         if not item or item["status"] != "in_progress":
@@ -146,8 +145,8 @@ def answer(*, user_id, session_id, input):
             """INSERT INTO practice_answers
                  (session_id, question_id, topic_id, position, prompt_snapshot, response, is_correct, time_spent_seconds)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-               ON CONFLICT (session_id, position) DO UPDATE SET response = EXCLUDED.response,
-                 is_correct = EXCLUDED.is_correct, time_spent_seconds = EXCLUDED.time_spent_seconds,
+               ON CONFLICT (session_id, position) DO UPDATE SET response = excluded.response,
+                 is_correct = excluded.is_correct, time_spent_seconds = excluded.time_spent_seconds,
                  answered_at = now() RETURNING *""",
             [session_id, item["question_id"], item["topic_id"], input["position"], item["prompt"],
              dumps(response), correct, input.get("timeSpentSeconds")],
@@ -190,16 +189,15 @@ def apply_grades(session_id, grades):
 
 def submit(*, user_id, session_id, duration_seconds=None):
     with transaction() as tx:
-        current = tx.query_one(
-            "SELECT * FROM practice_sessions WHERE id = $1 AND user_id = $2 FOR UPDATE", [session_id, user_id]
-        )
+        current = tx.query_one("SELECT * FROM practice_sessions WHERE id = $1 AND user_id = $2", [session_id, user_id])
         if not current:
             return None
         if current["status"] == "completed":
             return current
         stats = tx.query_one(
-            """SELECT count(*)::int AS answered, count(*) FILTER (WHERE is_correct)::int AS correct,
-                      array_remove(array_agg(DISTINCT t.name) FILTER (WHERE NOT a.is_correct), NULL) AS weak_topics
+            """SELECT count(*) AS answered, count(*) FILTER (WHERE a.is_correct) AS correct,
+                      json_group_array(DISTINCT t.name)
+                        FILTER (WHERE a.is_correct = 0 AND t.name IS NOT NULL) AS "weak_topics [JSONTEXT]"
                  FROM practice_answers a LEFT JOIN topics t ON t.id = a.topic_id WHERE a.session_id = $1""",
             [session_id],
         )
@@ -212,20 +210,20 @@ def submit(*, user_id, session_id, duration_seconds=None):
              duration_seconds],
         )
         topic_stats = tx.rows(
-            """SELECT topic_id, count(*)::int AS attempts,
-                      count(*) FILTER (WHERE is_correct)::int AS correct
+            """SELECT topic_id, count(*) AS attempts, count(*) FILTER (WHERE is_correct) AS correct
                  FROM practice_answers WHERE session_id=$1 AND topic_id IS NOT NULL GROUP BY topic_id""",
             [session_id],
         )
         for topic in topic_stats:
             tx.query(
                 """INSERT INTO user_topic_mastery (user_id, topic_id, attempts, correct_count, mastery_percent, last_practiced_at)
-                   VALUES ($1,$2,$3,$4,round($4::numeric/$3*100),now())
+                   VALUES ($1, $2, $3, $4, round(CAST($4 AS REAL) / $3 * 100), now())
                    ON CONFLICT (user_id, topic_id) DO UPDATE SET
-                     attempts=user_topic_mastery.attempts+EXCLUDED.attempts,
-                     correct_count=user_topic_mastery.correct_count+EXCLUDED.correct_count,
-                     mastery_percent=round((user_topic_mastery.correct_count+EXCLUDED.correct_count)::numeric /
-                       (user_topic_mastery.attempts+EXCLUDED.attempts)*100), last_practiced_at=now()""",
+                     attempts = user_topic_mastery.attempts + excluded.attempts,
+                     correct_count = user_topic_mastery.correct_count + excluded.correct_count,
+                     mastery_percent = round(CAST(user_topic_mastery.correct_count + excluded.correct_count AS REAL) /
+                       (user_topic_mastery.attempts + excluded.attempts) * 100),
+                     last_practiced_at = now()""",
                 [user_id, topic["topic_id"], topic["attempts"], topic["correct"]],
             )
         return completed
@@ -242,10 +240,10 @@ def home(user_id):
 
 def progress(user_id):
     daily = query(
-        """SELECT completed_at::date AS date, sum(correct_count)::int AS correct,
-                  sum(question_count)::int AS total
+        """SELECT date(completed_at) AS "date [DATE]", sum(correct_count) AS correct,
+                  sum(question_count) AS total
              FROM practice_sessions WHERE user_id=$1 AND status='completed'
-            GROUP BY completed_at::date ORDER BY date""",
+            GROUP BY date(completed_at) ORDER BY date(completed_at)""",
         [user_id],
     ).rows
     topic_rows = query(
@@ -255,8 +253,8 @@ def progress(user_id):
         [user_id],
     ).rows
     dates = query(
-        """SELECT DISTINCT completed_at::date AS date FROM practice_sessions
-            WHERE user_id=$1 AND status='completed' ORDER BY date DESC""",
+        """SELECT DISTINCT date(completed_at) AS "date [DATE]" FROM practice_sessions
+            WHERE user_id=$1 AND status='completed' ORDER BY date(completed_at) DESC""",
         [user_id],
     ).rows
     return {"daily": daily, "topics": topic_rows, "dates": [row["date"] for row in dates]}

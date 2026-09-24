@@ -1,6 +1,6 @@
-"""SQL for the teacher workspace and assistant (server/src/db/teacher.db.js)."""
+"""SQL for the teacher workspace and assistant."""
 
-from ..extensions import query, query_one, transaction
+from ..extensions import json_param, normalize_timestamp, query, query_one, transaction
 from ..utils.serialization import dumps
 
 
@@ -26,7 +26,7 @@ def assistant_messages(*, teacher_id, conversation_id):
              FROM teacher_assistant_messages m
              JOIN teacher_assistant_conversations c ON c.id = m.conversation_id
             WHERE m.conversation_id = $1 AND c.teacher_id = $2
-            ORDER BY m.created_at""",
+            ORDER BY m.created_at, m.rowid""",
         [conversation_id, teacher_id],
     ).rows
 
@@ -54,7 +54,7 @@ def assistant_history(teacher_id):
                   c.title, cl.title AS class_title,
                   (SELECT m.content FROM teacher_assistant_messages m
                     WHERE m.conversation_id = c.id
-                    ORDER BY m.created_at DESC LIMIT 1) AS last_content
+                    ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) AS last_content
              FROM teacher_assistant_conversations c
              LEFT JOIN classes cl ON cl.id = c.class_id
             WHERE c.teacher_id = $1
@@ -71,17 +71,17 @@ def clear_assistant_history(teacher_id):
 def dashboard(teacher_id):
     summary = query_one(
         """SELECT
-             (SELECT count(*)::int FROM classes WHERE teacher_id = $1 AND status = 'active') AS active_classes,
-             (SELECT count(DISTINCT ce.user_id)::int
+             (SELECT count(*) FROM classes WHERE teacher_id = $1 AND status = 'active') AS active_classes,
+             (SELECT count(DISTINCT ce.user_id)
                 FROM class_enrollments ce
                 JOIN classes c ON c.id = ce.class_id
                WHERE c.teacher_id = $1 AND c.status = 'active' AND ce.status = 'active') AS total_students,
-             (SELECT count(*)::int
+             (SELECT count(*)
                 FROM assignment_submissions s
                 JOIN assignments a ON a.id = s.assignment_id
                 JOIN classes c ON c.id = a.class_id
                WHERE c.teacher_id = $1 AND s.status IN ('submitted', 'late')) AS pending_reviews,
-             (SELECT count(*)::int
+             (SELECT count(*)
                 FROM assignment_submissions s
                 JOIN assignments a ON a.id = s.assignment_id
                 JOIN classes c ON c.id = a.class_id
@@ -90,47 +90,43 @@ def dashboard(teacher_id):
     )
     classes = query(
         """SELECT c.id, c.title, c.subject, c.join_code, c.cover_image_path,
-                  count(DISTINCT ce.user_id)::int AS student_count,
-                  count(DISTINCT l.id)::int AS lesson_count,
-                  count(DISTINCT l.id) FILTER (WHERE lp.status = 'completed')::int AS completed_lessons
+                  count(DISTINCT ce.user_id) AS student_count,
+                  count(DISTINCT l.id) AS lesson_count,
+                  count(DISTINCT l.id) FILTER (WHERE lp.status = 'completed') AS completed_lessons
              FROM classes c
-             LEFT JOIN class_enrollments ce
-               ON ce.class_id = c.id AND ce.status = 'active'
+             LEFT JOIN class_enrollments ce ON ce.class_id = c.id AND ce.status = 'active'
              LEFT JOIN lessons l ON l.class_id = c.id
-             LEFT JOIN lesson_progress lp
-               ON lp.lesson_id = l.id AND lp.status = 'completed'
+             LEFT JOIN lesson_progress lp ON lp.lesson_id = l.id AND lp.status = 'completed'
             WHERE c.teacher_id = $1 AND c.status = 'active'
             GROUP BY c.id
             ORDER BY c.created_at DESC""",
         [teacher_id],
     ).rows
-    assignments = query(
+    assignments_rows = query(
         """SELECT a.id, a.title, a.class_id, c.title AS class_name, a.due_at,
-                  count(s.id)::int AS submission_count,
-                  count(s.id) FILTER (WHERE s.status IN ('submitted', 'late'))::int AS pending_count,
-                  count(s.id) FILTER (WHERE s.status = 'graded')::int AS graded_count,
-                  count(ce.user_id)::int AS student_count
+                  count(s.id) AS submission_count,
+                  count(s.id) FILTER (WHERE s.status IN ('submitted', 'late')) AS pending_count,
+                  count(s.id) FILTER (WHERE s.status = 'graded') AS graded_count,
+                  count(ce.user_id) AS student_count
              FROM assignments a
              JOIN classes c ON c.id = a.class_id
-             LEFT JOIN class_enrollments ce
-               ON ce.class_id = c.id AND ce.status = 'active'
-             LEFT JOIN assignment_submissions s
-               ON s.assignment_id = a.id
+             LEFT JOIN class_enrollments ce ON ce.class_id = c.id AND ce.status = 'active'
+             LEFT JOIN assignment_submissions s ON s.assignment_id = a.id
             WHERE c.teacher_id = $1 AND a.status <> 'draft'
             GROUP BY a.id, c.title
             ORDER BY a.due_at NULLS LAST, a.created_at DESC
             LIMIT 20""",
         [teacher_id],
     ).rows
-    return {"summary": summary, "classes": classes, "assignments": assignments}
+    return {"summary": summary, "classes": classes, "assignments": assignments_rows}
 
 
 def update_class(*, teacher_id, class_id, patch):
     return query_one(
         """UPDATE classes
               SET title = COALESCE($3, title),
-                  description = CASE WHEN $4::boolean THEN $5 ELSE description END,
-                  subject = CASE WHEN $6::boolean THEN $7 ELSE subject END,
+                  description = CASE WHEN $4 THEN $5 ELSE description END,
+                  subject = CASE WHEN $6 THEN $7 ELSE subject END,
                   status = COALESCE($8, status),
                   updated_at = now()
             WHERE id = $2 AND teacher_id = $1
@@ -144,21 +140,19 @@ def students(*, teacher_id, class_id):
     return query(
         """SELECT u.id, COALESCE(u.full_name, u.email, u.phone, 'Student') AS name,
                   ce.joined_at,
-                  count(DISTINCT l.id)::int AS lesson_count,
-                  count(DISTINCT l.id) FILTER (WHERE lp.status = 'completed')::int AS completed_lessons,
-                  count(DISTINCT a.id)::int AS assignment_count,
-                  count(DISTINCT s.id) FILTER (WHERE s.status IN ('submitted', 'late', 'graded'))::int AS submitted_assignments,
-                  count(DISTINCT s.id) FILTER (WHERE s.status = 'graded')::int AS graded_assignments,
-                  COALESCE(round(avg(s.score) FILTER (WHERE s.status = 'graded'), 2), 0)::numeric AS average_score
+                  count(DISTINCT l.id) AS lesson_count,
+                  count(DISTINCT l.id) FILTER (WHERE lp.status = 'completed') AS completed_lessons,
+                  count(DISTINCT a.id) AS assignment_count,
+                  count(DISTINCT s.id) FILTER (WHERE s.status IN ('submitted', 'late', 'graded')) AS submitted_assignments,
+                  count(DISTINCT s.id) FILTER (WHERE s.status = 'graded') AS graded_assignments,
+                  COALESCE(round(avg(s.score) FILTER (WHERE s.status = 'graded'), 2), 0) AS average_score
              FROM classes c
              JOIN class_enrollments ce ON ce.class_id = c.id AND ce.status = 'active'
              JOIN users u ON u.id = ce.user_id
              LEFT JOIN lessons l ON l.class_id = c.id
-             LEFT JOIN lesson_progress lp
-               ON lp.lesson_id = l.id AND lp.user_id = u.id
+             LEFT JOIN lesson_progress lp ON lp.lesson_id = l.id AND lp.user_id = u.id
              LEFT JOIN assignments a ON a.class_id = c.id AND a.status <> 'draft'
-             LEFT JOIN assignment_submissions s
-               ON s.assignment_id = a.id AND s.user_id = u.id
+             LEFT JOIN assignment_submissions s ON s.assignment_id = a.id AND s.user_id = u.id
             WHERE c.id = $2 AND c.teacher_id = $1
             GROUP BY u.id, ce.joined_at
             ORDER BY name""",
@@ -170,14 +164,13 @@ def assignments(teacher_id):
     return query(
         """SELECT a.id, a.class_id, c.title AS class_name, a.title, a.description,
                   a.assignment_type, a.status, a.due_at, a.points, a.question_count,
-                  count(ce.user_id)::int AS student_count,
-                  count(s.id)::int AS submission_count,
-                  count(s.id) FILTER (WHERE s.status IN ('submitted', 'late'))::int AS pending_count,
-                  count(s.id) FILTER (WHERE s.status = 'graded')::int AS graded_count
+                  count(ce.user_id) AS student_count,
+                  count(s.id) AS submission_count,
+                  count(s.id) FILTER (WHERE s.status IN ('submitted', 'late')) AS pending_count,
+                  count(s.id) FILTER (WHERE s.status = 'graded') AS graded_count
              FROM assignments a
              JOIN classes c ON c.id = a.class_id
-             LEFT JOIN class_enrollments ce
-               ON ce.class_id = c.id AND ce.status = 'active'
+             LEFT JOIN class_enrollments ce ON ce.class_id = c.id AND ce.status = 'active'
              LEFT JOIN assignment_submissions s ON s.assignment_id = a.id
             WHERE c.teacher_id = $1
             GROUP BY a.id, c.title
@@ -191,10 +184,10 @@ def assignment(*, teacher_id, assignment_id):
         """SELECT a.id, a.class_id, a.quiz_id, a.title, a.description, a.instructions,
                   a.due_at, a.points, a.question_count, a.allow_file_upload,
                   a.assignment_type, a.status, c.title AS class_name,
-                  COALESCE(json_agg(json_build_object(
+                  json_group_array(json_object(
                     'id', am.id, 'title', am.title, 'originalFilename', am.original_filename,
                     'mimeType', am.mime_type, 'byteSize', am.byte_size
-                  ) ORDER BY am.created_at) FILTER (WHERE am.id IS NOT NULL), '[]') AS materials
+                  ) ORDER BY am.created_at) FILTER (WHERE am.id IS NOT NULL) AS "materials [JSONTEXT]"
              FROM assignments a
              JOIN classes c ON c.id = a.class_id
              LEFT JOIN assignment_materials am ON am.assignment_id = a.id
@@ -206,25 +199,25 @@ def assignment(*, teacher_id, assignment_id):
 
 def update_assignment(*, teacher_id, assignment_id, input):
     return query_one(
-        """UPDATE assignments a
+        """UPDATE assignments AS a
               SET title = $3,
                   description = $4,
-                  instructions = $5::jsonb,
+                  instructions = $5,
                   due_at = $6,
                   points = $7,
-                  status = CASE WHEN COALESCE($8, false) THEN 'published' ELSE a.status END,
-                  published_at = CASE WHEN COALESCE($8, false) AND a.published_at IS NULL THEN now() ELSE a.published_at END
+                  status = CASE WHEN COALESCE($8, 0) THEN 'published' ELSE a.status END,
+                  published_at = CASE WHEN COALESCE($8, 0) AND a.published_at IS NULL THEN now() ELSE a.published_at END
              FROM classes c
             WHERE a.id = $2 AND a.class_id = c.id AND c.teacher_id = $1
-            RETURNING a.*""",
+            RETURNING *""",
         [teacher_id, assignment_id, input["title"], input.get("description"), dumps(input.get("instructions") or []),
-         input.get("dueAt"), input["points"], input.get("publish") or False],
+         normalize_timestamp(input.get("dueAt")), input["points"], input.get("publish") or False],
     )
 
 
 def delete_assignment(*, teacher_id, assignment_id):
     with transaction() as tx:
-        materials = tx.rows(
+        materials_rows = tx.rows(
             """SELECT am.storage_path
                  FROM assignment_materials am
                  JOIN assignments a ON a.id = am.assignment_id
@@ -235,19 +228,17 @@ def delete_assignment(*, teacher_id, assignment_id):
             [teacher_id, assignment_id],
         )
         deleted = tx.query_one(
-            """DELETE FROM assignments a
-                USING classes c
-               WHERE a.id = $2
-                 AND a.class_id = c.id
-                 AND c.teacher_id = $1
-               RETURNING a.id, a.quiz_id""",
+            """DELETE FROM assignments
+                WHERE id = $2
+                  AND class_id IN (SELECT id FROM classes WHERE teacher_id = $1)
+                RETURNING id, quiz_id""",
             [teacher_id, assignment_id],
         )
         if not deleted:
             return None
         if deleted["quiz_id"]:
             tx.query("DELETE FROM quizzes WHERE id = $1", [deleted["quiz_id"]])
-        return {**deleted, "materials": materials}
+        return {**deleted, "materials": materials_rows}
 
 
 def create_assignment(*, teacher_id, input):
@@ -265,7 +256,8 @@ def create_assignment(*, teacher_id, input):
               AND ($9 = 'file' OR (q.id IS NOT NULL AND q.class_id = c.id))
            RETURNING *""",
         [teacher_id, input["classId"], input.get("quizId"), input["title"], input.get("description"),
-         dumps(input["instructions"]), input.get("dueAt"), input.get("points"), input["type"], input["publish"]],
+         dumps(input["instructions"]), normalize_timestamp(input.get("dueAt")), input.get("points"), input["type"],
+         input["publish"]],
     )
 
 
@@ -274,7 +266,7 @@ def create_quiz(*, teacher_id, input, quiz):
         created = tx.query_one(
             """INSERT INTO quizzes
                  (class_id, created_by, title, language, difficulty, question_count, generated_by_ai, status, description)
-               SELECT c.id, $1, $3, $4, 'mixed', $5, true, 'ready', $6
+               SELECT c.id, $1, $3, $4, 'mixed', $5, 1, 'ready', $6
                  FROM classes c
                 WHERE c.id = $2 AND c.teacher_id = $1 AND c.status = 'active'
                RETURNING id, class_id, title, language, question_count""",
@@ -297,11 +289,11 @@ def create_quiz(*, teacher_id, input, quiz):
             """INSERT INTO assignments
                  (class_id, quiz_id, created_by, title, due_at, points, question_count,
                   allow_file_upload, assignment_type, status, published_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, false, 'quiz', $8,
+               VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 'quiz', $8,
                        CASE WHEN $8 = 'published' THEN now() ELSE NULL END)
                RETURNING id, status""",
-            [created["class_id"], created["id"], teacher_id, input["title"], input.get("dueAt"), input.get("points"),
-             len(quiz["questions"]), "published" if input.get("publish") else "draft"],
+            [created["class_id"], created["id"], teacher_id, input["title"], normalize_timestamp(input.get("dueAt")),
+             input.get("points"), len(quiz["questions"]), "published" if input.get("publish") else "draft"],
         )
         return {"quiz": created, "assignment": assignment_row}
 
@@ -320,6 +312,7 @@ def add_assignment_attachment(*, teacher_id, assignment_id, file):
 
 
 def class_context(*, teacher_id, class_id):
+    # NULLS LAST keeps PostgreSQL's ordering for lessons without items.
     return query(
         """SELECT c.title AS class_title, c.subject,
                   l.title AS lesson_title, l.content_md,
@@ -328,7 +321,7 @@ def class_context(*, teacher_id, class_id):
              LEFT JOIN lessons l ON l.class_id = c.id
              LEFT JOIN lesson_items li ON li.lesson_id = l.id
             WHERE c.id = $2 AND c.teacher_id = $1
-            ORDER BY l.week_number, l.position, li.position""",
+            ORDER BY l.week_number NULLS LAST, l.position NULLS LAST, li.position NULLS LAST""",
         [teacher_id, class_id],
     ).rows
 
@@ -352,8 +345,8 @@ def selected_materials(*, teacher_id, class_id, material_ids):
         """SELECT m.id, m.title, m.original_filename, m.storage_path, m.mime_type
              FROM class_materials m
              JOIN classes c ON c.id = m.class_id
-            WHERE c.teacher_id = $1 AND m.class_id = $2 AND m.id = ANY($3::uuid[])""",
-        [teacher_id, class_id, list(material_ids)],
+            WHERE c.teacher_id = $1 AND m.class_id = $2 AND m.id IN (SELECT value FROM json_each($3))""",
+        [teacher_id, class_id, json_param(material_ids)],
     ).rows
 
 
@@ -369,10 +362,10 @@ def material_file(*, teacher_id, class_id, material_id):
 
 def remove_material(*, teacher_id, class_id, material_id):
     return query_one(
-        """DELETE FROM class_materials m
-            USING classes c
-           WHERE m.id = $3 AND m.class_id = c.id AND c.id = $2 AND c.teacher_id = $1
-           RETURNING m.storage_path""",
+        """DELETE FROM class_materials
+            WHERE id = $3 AND class_id = $2
+              AND class_id IN (SELECT id FROM classes WHERE teacher_id = $1)
+            RETURNING storage_path""",
         [teacher_id, class_id, material_id],
     )
 

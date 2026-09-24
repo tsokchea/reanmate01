@@ -1,8 +1,8 @@
-"""SQL for ``study_kits`` (server/src/db/kits.db.js).
+"""SQL for ``study_kits``.
 
 Reads shape the row for docs/API-CONTRACT.md §3: cardCount, sourceKind and
-titleKm are not columns, and the lateral subqueries are indexed so the list
-stays one round trip.
+titleKm are not columns, and the correlated subqueries use the kit indexes so
+the list stays one round trip.
 """
 
 from ..extensions import query, query_one
@@ -23,8 +23,8 @@ KIT_SELECT = """
     k.last_studied_at,
     k.created_at,
     k.updated_at,
-    (SELECT count(*) FROM flashcards f WHERE f.study_kit_id = k.id)::int AS card_count,
-    (SELECT count(*) FROM kit_sources s WHERE s.study_kit_id = k.id)::int AS file_count,
+    (SELECT count(*) FROM flashcards f WHERE f.study_kit_id = k.id) AS card_count,
+    (SELECT count(*) FROM kit_sources s WHERE s.study_kit_id = k.id) AS file_count,
     (SELECT s.kind FROM kit_sources s
       WHERE s.study_kit_id = k.id
       ORDER BY s.created_at ASC, s.id ASC
@@ -34,14 +34,14 @@ KIT_SELECT = """
 
 
 def list_for_user(*, user_id, status=None, q=None):
-    """Searched with pg_trgm similarity + ILIKE, never to_tsvector (Khmer has no word spaces)."""
+    """Trigram similarity plus a case-insensitive substring match — never word tokenising (Khmer)."""
     return query(
         f"""{KIT_SELECT}
             WHERE k.user_id = $1
-              AND ($2::text IS NULL OR k.status = $2)
+              AND ($2 IS NULL OR k.status = $2)
               AND (
-                $3::text IS NULL
-                OR k.title ILIKE '%' || $3 || '%'
+                $3 IS NULL
+                OR ilike(k.title, '%' || $3 || '%')
                 OR similarity(k.title, $3) > 0.15
               )
             ORDER BY k.last_studied_at DESC NULLS LAST, k.created_at DESC""",
@@ -55,7 +55,7 @@ def find_by_id(*, user_id, kit_id):
 
 def count_for_user(user_id, tx=None):
     """Personal kits only — a kit shared into a class is exempt from the cap."""
-    sql = "SELECT count(*)::int AS count FROM study_kits WHERE user_id = $1 AND class_id IS NULL"
+    sql = "SELECT count(*) AS count FROM study_kits WHERE user_id = $1 AND class_id IS NULL"
     row = tx.query_one(sql, [user_id]) if tx else query_one(sql, [user_id])
     return row["count"]
 
@@ -80,7 +80,7 @@ def update(*, user_id, kit_id, patch):
              accent_color     = COALESCE($7, accent_color),
              status           = COALESCE($8, status),
              progress_percent = COALESCE($9, progress_percent),
-             folder_id        = CASE WHEN $10::boolean THEN $11::uuid ELSE folder_id END
+             folder_id        = CASE WHEN $10 THEN $11 ELSE folder_id END
            WHERE id = $1 AND user_id = $2
            RETURNING id""",
         [
@@ -94,8 +94,7 @@ def update(*, user_id, kit_id, patch):
 
 def delete_returning_paths(tx, *, user_id, kit_id):
     """Storage paths of everything the cascade is about to remove, or None when not owned."""
-    owned = tx.rows("SELECT id FROM study_kits WHERE id = $1 AND user_id = $2", [kit_id, user_id])
-    if not owned:
+    if not tx.rows("SELECT id FROM study_kits WHERE id = $1 AND user_id = $2", [kit_id, user_id]):
         return None
     paths = tx.rows(
         "SELECT storage_path FROM kit_sources WHERE study_kit_id = $1 AND storage_path IS NOT NULL", [kit_id]

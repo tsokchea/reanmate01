@@ -1,13 +1,12 @@
-"""SQL for ``document_chunks`` — the retrieval corpus, with vector(1536) embeddings."""
+"""SQL for ``document_chunks`` — the retrieval corpus.
 
-import json
+Embeddings are 1536 float32 values in a BLOB. Nearest-neighbour search is an
+exact scan scored by vec_cosine_distance() (pgvector's ``<=>``), limited to one
+kit — or one material — so it only ever touches that kit's chunks.
+"""
 
-from ..extensions import query
+from ..extensions import query, vector_blob
 from ..utils.serialization import dumps
-
-
-def _vector(embedding):
-    return json.dumps(embedding) if embedding else None
 
 
 def insert_batch(tx, *, source_id, study_kit_id, chunks):
@@ -18,12 +17,12 @@ def insert_batch(tx, *, source_id, study_kit_id, chunks):
                  source_id, study_kit_id, chunk_index, content, token_count,
                  page_number, start_seconds, end_seconds, embedding, metadata
                )
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                RETURNING id, chunk_index""",
             [
                 source_id, study_kit_id, chunk["chunkIndex"], chunk["content"], chunk.get("tokenCount"),
                 chunk.get("pageNumber"), chunk.get("startSeconds"), chunk.get("endSeconds"),
-                _vector(chunk.get("embedding")), dumps(chunk.get("metadata") or {}),
+                vector_blob(chunk.get("embedding")), dumps(chunk.get("metadata") or {}),
             ],
         ))
     return inserted
@@ -41,7 +40,7 @@ def list_for_source(source_id):
 
 
 def count_for_source(source_id):
-    rows = query("SELECT count(*)::int AS count FROM document_chunks WHERE source_id = $1", [source_id]).rows
+    rows = query("SELECT count(*) AS count FROM document_chunks WHERE source_id = $1", [source_id]).rows
     return rows[0]["count"] if rows else 0
 
 
@@ -50,14 +49,14 @@ def cosine_search_for_kit(*, kit_id, embedding, limit=3, source_id=None):
     return query(
         """SELECT c.id, c.source_id, c.content, c.page_number,
                   c.start_seconds, c.end_seconds, s.title,
-                  c.embedding <=> $2::vector AS distance
+                  vec_cosine_distance(c.embedding, $2) AS distance
              FROM document_chunks c
              JOIN kit_sources s ON s.id = c.source_id
             WHERE c.study_kit_id = $1 AND c.embedding IS NOT NULL
-              AND ($4::uuid IS NULL OR c.source_id = $4::uuid)
-            ORDER BY c.embedding <=> $2::vector
+              AND ($4 IS NULL OR c.source_id = $4)
+            ORDER BY distance
             LIMIT $3""",
-        [kit_id, json.dumps(embedding), limit, source_id],
+        [kit_id, vector_blob(embedding), limit, source_id],
     ).rows
 
 

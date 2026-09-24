@@ -1,4 +1,4 @@
-"""SQL for the ``users`` table (server/src/db/users.db.js).
+"""SQL for the ``users`` table.
 
 Every read selects an explicit column list rather than ``*``, so password_hash
 cannot leak into an API response by accident.
@@ -20,8 +20,8 @@ def create(*, full_name, email, phone, password_hash, locale=None, role, verifie
         f"""INSERT INTO users (full_name, email, phone, password_hash, role, locale,
                             phone_verified_at, email_verified_at)
          VALUES ($1, $2, $3, $4, $5, $6,
-                 CASE WHEN $3::text IS NULL THEN NULL ELSE $7::timestamptz END,
-                 CASE WHEN $2::text IS NULL THEN NULL ELSE $7::timestamptz END)
+                 CASE WHEN $3 IS NULL THEN NULL ELSE $7 END,
+                 CASE WHEN $2 IS NULL THEN NULL ELSE $7 END)
          RETURNING {PUBLIC_COLUMNS}""",
         [full_name, email, phone, password_hash, role, locale or "km", verified_at],
     )
@@ -48,8 +48,8 @@ def identifier_taken(*, email, phone):
     rows = query(
         """SELECT (email = $1) AS email_taken, (phone = $2) AS phone_taken
              FROM users
-            WHERE ($1::text IS NOT NULL AND email = $1)
-               OR ($2::text IS NOT NULL AND phone = $2)""",
+            WHERE ($1 IS NOT NULL AND email = $1)
+               OR ($2 IS NOT NULL AND phone = $2)""",
         [email, phone],
     ).rows
     return {"email": any(r["email_taken"] for r in rows), "phone": any(r["phone_taken"] for r in rows)}

@@ -93,7 +93,7 @@ def update_status(source_id, *, status=None, error_message=_UNSET, page_count=No
              duration_seconds = COALESCE($5, duration_seconds),
              extracted_text   = COALESCE($6, extracted_text),
              thumbnail_url    = COALESCE($7, thumbnail_url),
-             processed_at     = CASE WHEN $8::boolean THEN now() ELSE processed_at END,
+             processed_at     = CASE WHEN $8 THEN now() ELSE processed_at END,
              metadata         = $9
            WHERE id = $1
            RETURNING id""",
@@ -109,12 +109,10 @@ def update_status(source_id, *, status=None, error_message=_UNSET, page_count=No
 
 def delete_returning_path(*, user_id, kit_id, source_id):
     return query_one(
-        """DELETE FROM kit_sources s
-            USING study_kits k
-            WHERE s.id = $1
-              AND s.study_kit_id = $2
-              AND k.id = s.study_kit_id
-              AND k.user_id = $3
-            RETURNING s.storage_path""",
+        """DELETE FROM kit_sources
+            WHERE id = $1
+              AND study_kit_id = $2
+              AND EXISTS (SELECT 1 FROM study_kits k WHERE k.id = kit_sources.study_kit_id AND k.user_id = $3)
+            RETURNING storage_path""",
         [source_id, kit_id, user_id],
     )

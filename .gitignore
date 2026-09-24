@@ -57,3 +57,8 @@ Thumbs.db
 pnpm-lock.yaml
 yarn.lock
 bun.lockb
+
+# local SQLite database (backend/instance/reanmate.db and its WAL files)
+backend/instance/
+*.db-wal
+*.db-shm

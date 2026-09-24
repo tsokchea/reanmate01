@@ -5,9 +5,7 @@ Flask>=3.1,<4
 flask-cors>=5.0,<7
 Werkzeug>=3.1,<4
 
-# PostgreSQL 16+ (with uuid-ossp, pg_trgm, pgvector) — raw parameterized SQL, no ORM
-psycopg[binary]>=3.2,<4
-psycopg-pool>=3.2,<4
+# Database: SQLite via Python's built-in sqlite3 module (3.44+ required) — no package needed.
 
 # Auth: HS256 JWT access tokens and bcrypt password hashes (compatible with the Node-issued ones)
 PyJWT>=2.9,<3

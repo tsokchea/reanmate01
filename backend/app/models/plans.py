@@ -1,22 +1,25 @@
-"""SQL for plan limits, features and usage counters (server/src/db/plans.db.js)."""
+"""SQL for plan limits, features and usage counters."""
 
 from ..extensions import query, query_one
+from ._time import start_of_week
 
+# Consumes quota atomically: the insert and the capped increment both check
+# the plan's limit, so two concurrent consumes at the boundary cannot both win.
 CONSUME_QUOTA_SQL = """
   INSERT INTO usage_counters (user_id, counter_key, period_start, quantity)
-  SELECT $1, $2, $3::date, $4
+  SELECT $1, $2, $3, $4
    WHERE EXISTS (
      SELECT 1 FROM users u
      JOIN plan_limits pl ON pl.plan_tier = u.plan_tier AND pl.limit_key = $2
      WHERE u.id = $1 AND (pl.limit_value IS NULL OR $4 <= pl.limit_value)
    )
   ON CONFLICT (user_id, counter_key, period_start) DO UPDATE
-    SET quantity = usage_counters.quantity + EXCLUDED.quantity
+    SET quantity = usage_counters.quantity + excluded.quantity
   WHERE EXISTS (
     SELECT 1 FROM users u
     JOIN plan_limits pl ON pl.plan_tier = u.plan_tier AND pl.limit_key = $2
     WHERE u.id = $1
-      AND (pl.limit_value IS NULL OR usage_counters.quantity + EXCLUDED.quantity <= pl.limit_value)
+      AND (pl.limit_value IS NULL OR usage_counters.quantity + excluded.quantity <= pl.limit_value)
   )
   RETURNING quantity, (
     SELECT pl.limit_value FROM users u
@@ -53,17 +56,18 @@ def feature(user_id, key):
 def all_for_user(user_id, period_start):
     return query_one(
         """SELECT u.plan_tier,
-                  COALESCE((SELECT jsonb_object_agg(pl.limit_key, jsonb_build_object(
+                  COALESCE((SELECT json_group_object(pl.limit_key, json_object(
                     'limit', pl.limit_value,
                     'used', CASE pl.limit_key
-                      WHEN 'max_kits' THEN (SELECT count(*)::int FROM study_kits k WHERE k.user_id = u.id AND k.class_id IS NULL)
-                      WHEN 'practice_sessions_per_week' THEN (SELECT count(*)::int FROM practice_sessions ps WHERE ps.user_id = u.id AND ps.started_at >= date_trunc('week', now()))
+                      WHEN 'max_kits' THEN (SELECT count(*) FROM study_kits k WHERE k.user_id = u.id AND k.class_id IS NULL)
+                      WHEN 'practice_sessions_per_week' THEN (SELECT count(*) FROM practice_sessions ps WHERE ps.user_id = u.id AND ps.started_at >= $3)
                       ELSE COALESCE((SELECT uc.quantity FROM usage_counters uc WHERE uc.user_id = u.id AND uc.counter_key = pl.limit_key AND uc.period_start = $2), 0)
                     END
-                  )) FROM plan_limits pl WHERE pl.plan_tier = u.plan_tier), '{}'::jsonb) AS limits,
-                  COALESCE((SELECT jsonb_object_agg(pf.feature_key, pf.enabled) FROM plan_features pf WHERE pf.plan_tier = u.plan_tier), '{}'::jsonb) AS features
+                  )) FROM plan_limits pl WHERE pl.plan_tier = u.plan_tier), '{}') AS "limits [JSONTEXT]",
+                  COALESCE((SELECT json_group_object(pf.feature_key, json(CASE WHEN pf.enabled THEN 'true' ELSE 'false' END))
+                              FROM plan_features pf WHERE pf.plan_tier = u.plan_tier), '{}') AS "features [JSONTEXT]"
              FROM users u WHERE u.id = $1""",
-        [user_id, period_start],
+        [user_id, period_start, start_of_week()],
     )
 
 

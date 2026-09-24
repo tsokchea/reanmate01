@@ -1,4 +1,4 @@
-"""SQL for classes, lessons and enrollment (server/src/db/classes.db.js)."""
+"""SQL for classes, lessons and enrollment."""
 
 from ..extensions import query, query_one, transaction
 
@@ -13,8 +13,8 @@ CLASS_SELECT = """
          c.week_count, c.cover_color, c.cover_image_path, c.cover_image_mime_type,
          c.cover_image_byte_size, c.status, c.created_at,
          COALESCE(u.full_name, u.email, u.phone, 'Teacher') AS teacher_name,
-         (SELECT count(*)::int FROM lessons l WHERE l.class_id = c.id) AS lesson_count,
-         (SELECT count(*)::int FROM lesson_progress lp
+         (SELECT count(*) FROM lessons l WHERE l.class_id = c.id) AS lesson_count,
+         (SELECT count(*) FROM lesson_progress lp
             JOIN lessons l ON l.id = lp.lesson_id
            WHERE l.class_id = c.id AND lp.user_id = $1 AND lp.status = 'completed') AS lessons_done
     FROM classes c JOIN users u ON u.id = c.teacher_id"""
@@ -51,8 +51,7 @@ def set_cover(*, teacher_id, class_id, storage_path, mime_type, byte_size):
 
 def cover(*, user_id, class_id):
     return query_one(
-        f"""SELECT c.cover_image_path, c.cover_image_mime_type FROM classes c
-            WHERE c.id = $2 AND {ACCESS}""",
+        f"SELECT c.cover_image_path, c.cover_image_mime_type FROM classes c WHERE c.id = $2 AND {ACCESS}",
         [user_id, class_id],
     )
 
@@ -72,13 +71,13 @@ def lessons(user_id, class_id):
     return query(
         f"""SELECT l.id, l.week_number, l.position, l.title, l.description, l.kind, l.content_md,
                    COALESCE(lp.status, 'not_started') AS progress_status,
-                   count(li.id)::int AS item_count,
-                   count(lip.id)::int AS completed_items,
-                   COALESCE(jsonb_agg(jsonb_build_object(
+                   count(li.id) AS item_count,
+                   count(lip.id) AS completed_items,
+                   json_group_array(json_object(
                      'id', li.id, 'position', li.position, 'title', li.title,
                      'kind', li.kind, 'contentMd', li.content_md,
                      'completedAt', lip.completed_at
-                   ) ORDER BY li.position) FILTER (WHERE li.id IS NOT NULL), '[]'::jsonb) AS items
+                   ) ORDER BY li.position) FILTER (WHERE li.id IS NOT NULL) AS "items [JSONTEXT]"
               FROM lessons l JOIN classes c ON c.id = l.class_id
               LEFT JOIN lesson_progress lp ON lp.lesson_id = l.id AND lp.user_id = $1
               LEFT JOIN lesson_items li ON li.lesson_id = l.id
@@ -97,7 +96,7 @@ def materials(user_id, class_id):
               FROM class_materials m JOIN classes c ON c.id = m.class_id
               LEFT JOIN lessons l ON l.id = m.lesson_id
              WHERE m.class_id = $2 AND {ACCESS}
-             ORDER BY week_number, m.created_at""",
+             ORDER BY COALESCE(m.week_number, l.week_number, 1), m.created_at""",
         [user_id, class_id],
     ).rows
 
@@ -109,7 +108,7 @@ def quizzes(user_id, class_id):
               FROM quizzes q JOIN classes c ON c.id = q.class_id
               LEFT JOIN lessons l ON l.id = q.lesson_id
              WHERE q.class_id = $2 AND {ACCESS}
-             ORDER BY week_number, q.created_at""",
+             ORDER BY COALESCE(l.week_number, 1), q.created_at""",
         [user_id, class_id],
     ).rows
 
@@ -128,9 +127,8 @@ def assignments(user_id, class_id):
 
 def create_lesson(*, teacher_id, class_id, lesson, items):
     with transaction() as tx:
-        klass = tx.query_one(
-            "SELECT id, week_count FROM classes WHERE id = $1 AND teacher_id = $2 FOR UPDATE", [class_id, teacher_id]
-        )
+        klass = tx.query_one("SELECT id, week_count FROM classes WHERE id = $1 AND teacher_id = $2",
+                             [class_id, teacher_id])
         if not klass or lesson["weekNumber"] > klass["week_count"]:
             return None
         position = tx.query_one(
@@ -154,10 +152,10 @@ def create_lesson(*, teacher_id, class_id, lesson, items):
 
 def share_kit(*, teacher_id, class_id, kit_id):
     return query_one(
-        """UPDATE study_kits k SET class_id = $1
-            WHERE k.id = $2 AND k.user_id = $3
+        """UPDATE study_kits SET class_id = $1
+            WHERE id = $2 AND user_id = $3
               AND EXISTS (SELECT 1 FROM classes c WHERE c.id = $1 AND c.teacher_id = $3)
-            RETURNING k.id, k.class_id""",
+            RETURNING id, class_id""",
         [class_id, kit_id, teacher_id],
     )
 
@@ -170,7 +168,7 @@ def complete_item(*, user_id, item_id):
                WHERE li.id = $1 AND EXISTS (
                  SELECT 1 FROM class_enrollments ce
                   WHERE ce.class_id = c.id AND ce.user_id = $2 AND ce.status = 'active'
-               ) FOR UPDATE OF li""",
+               )""",
             [item_id, user_id],
         )
         if not item:
@@ -182,7 +180,7 @@ def complete_item(*, user_id, item_id):
         )
         return tx.query_one(
             """WITH counts AS (
-                 SELECT count(li.id)::int AS total, count(lip.id)::int AS done
+                 SELECT count(li.id) AS total, count(lip.id) AS done
                    FROM lesson_items li
                    LEFT JOIN lesson_item_progress lip
                      ON lip.lesson_item_id = li.id AND lip.user_id = $2
@@ -194,11 +192,11 @@ def complete_item(*, user_id, item_id):
                            WHEN done > 0 THEN 'in_progress' ELSE 'not_started' END,
                       CASE WHEN done > 0 THEN now() END,
                       CASE WHEN done = total AND total > 0 THEN now() END
-                 FROM counts
+                 FROM counts WHERE true
                ON CONFLICT (lesson_id, user_id) DO UPDATE SET
-                 status = EXCLUDED.status,
-                 started_at = COALESCE(lesson_progress.started_at, EXCLUDED.started_at),
-                 completed_at = EXCLUDED.completed_at
+                 status = excluded.status,
+                 started_at = COALESCE(lesson_progress.started_at, excluded.started_at),
+                 completed_at = excluded.completed_at
                RETURNING *""",
             [item["lesson_id"], user_id],
         )

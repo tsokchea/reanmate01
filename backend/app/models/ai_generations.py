@@ -6,6 +6,7 @@ user's critical path.
 
 from ..extensions import query
 from ..utils.serialization import dumps
+from ._time import days_ago
 
 
 def insert(*, user_id=None, study_kit_id=None, source_id=None, kind, provider, model=None, request=None,
@@ -27,31 +28,29 @@ def insert(*, user_id=None, study_kit_id=None, source_id=None, kind, provider, m
             dumps(request or {}), dumps(response or {}), status, error_message, latency_ms,
             usage.get("promptTokens"), usage.get("completionTokens"), usage.get("reasoningTokens"),
             usage.get("cachedPromptTokens"), usage.get("totalTokens"), language, source_chars,
-            # The column is NOT NULL: a generation that reported no usage still
-            # made at least one request, so floor at 1 rather than writing 0.
+            # NOT NULL: a generation that reported no usage still made one request.
             max(1, usage.get("apiCalls") or 1),
         ],
     ).rows[0]
 
 
 def token_ratios(since_days=7):
-    """The Khmer-versus-English comparison over a window."""
+    """The Khmer-versus-English comparison over a window (mock rows excluded)."""
     return query(
         """SELECT language, kind, model,
-                  count(*)                                AS generations,
-                  sum(api_calls)                          AS api_calls,
-                  sum(prompt_tokens)                      AS prompt_tokens,
-                  sum(completion_tokens)                  AS completion_tokens,
-                  sum(source_chars)                       AS source_chars,
-                  round(avg(prompt_tokens)::numeric, 1)   AS avg_prompt_tokens,
-                  round(sum(prompt_tokens)::numeric
-                        / NULLIF(sum(source_chars), 0), 4) AS prompt_tokens_per_char
+                  count(*)                             AS generations,
+                  sum(api_calls)                       AS api_calls,
+                  sum(prompt_tokens)                   AS prompt_tokens,
+                  sum(completion_tokens)               AS completion_tokens,
+                  sum(source_chars)                    AS source_chars,
+                  round(avg(prompt_tokens), 1)         AS avg_prompt_tokens,
+                  round(CAST(sum(prompt_tokens) AS REAL) / NULLIF(sum(source_chars), 0), 4) AS prompt_tokens_per_char
              FROM ai_generations
             WHERE status = 'ok'
               AND provider <> 'mock'
               AND language IS NOT NULL
-              AND created_at >= now() - make_interval(days => $1)
+              AND created_at >= $1
             GROUP BY language, kind, model
             ORDER BY kind, language""",
-        [since_days],
+        [days_ago(since_days)],
     ).rows

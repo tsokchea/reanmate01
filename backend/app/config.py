@@ -44,7 +44,8 @@ class Config:
     NODE_ENV = os.environ.get("NODE_ENV") or os.environ.get("FLASK_ENV") or "development"
     PORT = _to_int(os.environ.get("PORT"), 4000)
 
-    DATABASE_URL = _required("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/reanmate")
+    # SQLite file. A relative path resolves against backend/.
+    DATABASE_URL = _required("DATABASE_URL", "sqlite:///instance/reanmate.db")
 
     # Keep the deployed frontend available even when an old env value is still
     # present. Additional staging or preview origins remain configurable.

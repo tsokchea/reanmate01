@@ -31,6 +31,7 @@ def list_modules(cache_id):
 
 
 def claim_module(cache_id, position):
+    """Takes ownership of one module so two pollers never pay for it twice."""
     return query_one(
         """UPDATE study_guide_modules SET status = 'generating'
             WHERE generation_cache_id = $1 AND position = $2 AND status IN ('pending', 'failed')
@@ -60,7 +61,7 @@ def fail_module(cache_id, position):
 def finish(cache_id):
     """Ready only when every module is; one failed module leaves the guide 'failed' for a retry."""
     query(
-        """UPDATE ai_generation_cache c
+        """UPDATE ai_generation_cache AS c
               SET status = CASE
                 WHEN NOT EXISTS (
                   SELECT 1 FROM study_guide_modules m

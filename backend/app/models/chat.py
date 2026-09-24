@@ -1,17 +1,24 @@
-"""SQL for tutor chat conversations and messages (server/src/db/chat.db.js)."""
+"""SQL for tutor chat conversations and messages.
+
+Messages order by created_at and then insertion order (rowid), so a user
+message and the assistant placeholder written in the same millisecond always
+come back in the order they were written.
+"""
 
 from ..extensions import query, query_one, transaction
 from ..utils.serialization import dumps
+from ._time import start_of_month
 
 MESSAGE_SELECT = """
   SELECT m.id, m.conversation_id, m.reply_to_message_id, m.role, m.content,
          m.citations, m.status, m.model, m.created_at"""
 
-_USAGE_SQL = """SELECT count(*) FILTER (WHERE m.status = 'complete')::int AS used,
-                       count(*) FILTER (WHERE m.status IN ('queued', 'streaming'))::int AS reserved
+# Completed replies count against the month; queued/streaming ones are reserved.
+_USAGE_SQL = """SELECT count(*) FILTER (WHERE m.status = 'complete') AS used,
+                       count(*) FILTER (WHERE m.status IN ('queued', 'streaming')) AS reserved
                   FROM chat_messages m JOIN chat_conversations c ON c.id = m.conversation_id
                  WHERE c.user_id = $1 AND m.role = 'assistant'
-                   AND m.created_at >= date_trunc('month', now())"""
+                   AND m.created_at >= $2"""
 
 
 def history_for_user(*, user_id, language, limit=50):
@@ -20,7 +27,7 @@ def history_for_user(*, user_id, language, limit=50):
                   k.title AS kit_title, s.title AS source_title,
                   (SELECT m.content FROM chat_messages m
                     WHERE m.conversation_id = c.id AND m.role = 'user'
-                    ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS preview
+                    ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) AS preview
              FROM chat_conversations c
              JOIN study_kits k ON k.id = c.study_kit_id
              LEFT JOIN kit_sources s ON s.id = c.source_id
@@ -40,7 +47,7 @@ def conversation_for_kit(*, user_id, kit_id, language, source_id=None):
              JOIN study_kits k ON k.id = c.study_kit_id
              LEFT JOIN kit_sources s ON s.id = c.source_id
             WHERE c.user_id = $1 AND c.study_kit_id = $2 AND c.language = $3
-              AND c.source_id IS NOT DISTINCT FROM $4::uuid""",
+              AND c.source_id IS $4""",
         [user_id, kit_id, language, source_id],
     )
 
@@ -49,7 +56,7 @@ def messages(conversation_id, limit=100):
     return query(
         f"""{MESSAGE_SELECT} FROM chat_messages m
             WHERE m.conversation_id = $1
-            ORDER BY m.created_at ASC, m.id ASC LIMIT $2""",
+            ORDER BY m.created_at ASC, m.rowid ASC LIMIT $2""",
         [conversation_id, limit],
     ).rows
 
@@ -57,23 +64,22 @@ def messages(conversation_id, limit=100):
 def recent_history(conversation_id, limit=4):
     return query(
         """SELECT role, content FROM (
-             SELECT role, content, created_at, id
+             SELECT role, content, created_at, rowid AS seq
                FROM chat_messages
               WHERE conversation_id = $1
                 AND (role = 'user' OR (role = 'assistant' AND status = 'complete'))
-              ORDER BY created_at DESC, id DESC LIMIT $2
-           ) recent ORDER BY created_at ASC, id ASC""",
+              ORDER BY created_at DESC, seq DESC LIMIT $2
+           ) recent ORDER BY created_at ASC, seq ASC""",
         [conversation_id, limit],
     ).rows
 
 
 def create_session(*, user_id, kit_id, language, content, limit, source_id=None):
     with transaction() as tx:
-        tx.query("SELECT id FROM users WHERE id = $1 FOR UPDATE", [user_id])
-        kit = tx.query_one("SELECT id, title FROM study_kits WHERE id = $1 AND user_id = $2 FOR UPDATE", [kit_id, user_id])
+        kit = tx.query_one("SELECT id, title FROM study_kits WHERE id = $1 AND user_id = $2", [kit_id, user_id])
         if not kit:
             return {"missing": True}
-        usage = tx.query_one(_USAGE_SQL, [user_id])
+        usage = tx.query_one(_USAGE_SQL, [user_id, start_of_month()])
         if limit is not None and usage["used"] + usage["reserved"] >= limit:
             return {"quotaExceeded": True, "used": usage["used"], "limit": limit}
 
@@ -86,7 +92,7 @@ def create_session(*, user_id, kit_id, language, content, limit, source_id=None)
         conversation = tx.query_one(
             """INSERT INTO chat_conversations (user_id, study_kit_id, source_id, title, language)
                VALUES ($1, $2, $3, $4, $5)
-               ON CONFLICT (user_id, study_kit_id, source_id, language) WHERE study_kit_id IS NOT NULL
+               ON CONFLICT (user_id, study_kit_id, COALESCE(source_id, ''), language) WHERE study_kit_id IS NOT NULL
                DO UPDATE SET title = chat_conversations.title
                RETURNING id, study_kit_id, source_id, language""",
             [user_id, kit_id, source["id"] if source else None, kit["title"], language],
@@ -108,18 +114,17 @@ def create_session(*, user_id, kit_id, language, content, limit, source_id=None)
 
 def create_retry(*, user_id, session_id, limit):
     with transaction() as tx:
-        tx.query("SELECT id FROM users WHERE id = $1 FOR UPDATE", [user_id])
         previous = tx.query_one(
             """SELECT m.id, m.reply_to_message_id, m.status, c.id AS conversation_id
                  FROM chat_messages m JOIN chat_conversations c ON c.id = m.conversation_id
-                WHERE m.id = $1 AND c.user_id = $2 AND m.role = 'assistant' FOR UPDATE""",
+                WHERE m.id = $1 AND c.user_id = $2 AND m.role = 'assistant'""",
             [session_id, user_id],
         )
         if not previous:
             return {"missing": True}
         if previous["status"] != "failed":
             return {"conflict": True}
-        usage = tx.query_one(_USAGE_SQL, [user_id])
+        usage = tx.query_one(_USAGE_SQL, [user_id, start_of_month()])
         if limit is not None and usage["used"] + usage["reserved"] >= limit:
             return {"quotaExceeded": True, "used": usage["used"], "limit": limit}
         assistant_message = tx.query_one(

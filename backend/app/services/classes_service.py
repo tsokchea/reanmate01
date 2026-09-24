@@ -2,8 +2,7 @@
 
 import secrets
 
-from psycopg import errors as pg_errors
-
+from ..extensions import is_unique_violation
 from ..middleware.errors import ApiError
 from ..middleware.upload import absolute_upload_path, relative_upload_path, remove_uploaded_file, verify_uploaded_file
 from ..models import classes as classes_db
@@ -73,8 +72,8 @@ def create(teacher_id, data):
                                     subject=data.get("subject"), weekCount=data["weekCount"],
                                     join_code=secrets.token_hex(4)[:6].upper())
             return {"class": _class_api({**row, "teacher_name": None, "lesson_count": 0, "lessons_done": 0})}
-        except pg_errors.UniqueViolation:
-            if attempt == 4:
+        except Exception as err:
+            if not is_unique_violation(err) or attempt == 4:
                 raise
     raise ApiError.conflict("Could not allocate a class code")
 

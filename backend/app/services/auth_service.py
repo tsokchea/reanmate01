@@ -11,8 +11,8 @@ import threading
 
 import bcrypt
 from flask import request
-from psycopg import errors as pg_errors
 
+from ..extensions import is_unique_violation
 from ..middleware.errors import ApiError
 from ..models import auth_sessions as auth_sessions_db
 from ..models import onboarding as onboarding_db
@@ -93,9 +93,11 @@ def register(data):
             full_name=data["fullName"], email=email, phone=phone, password_hash=password_hash,
             locale=data.get("locale"), role=data["role"], verified_at=dt.datetime.now(dt.timezone.utc),
         )
-    except pg_errors.UniqueViolation as err:
+    except Exception as err:
         # Two signups racing past the pre-check land here.
-        raise ApiError.conflict("That account already exists") from err
+        if is_unique_violation(err):
+            raise ApiError.conflict("That account already exists") from err
+        raise
 
     return _issue_session(user)
 

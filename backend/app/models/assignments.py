@@ -1,6 +1,6 @@
-"""SQL for assignments and submissions (server/src/db/assignments.db.js)."""
+"""SQL for assignments and submissions."""
 
-from ..extensions import query, query_one, transaction
+from ..extensions import json_param, normalize_timestamp, query, query_one, transaction
 from ..utils.serialization import dumps
 
 # $2 is the viewer here.
@@ -24,7 +24,7 @@ def create(*, teacher_id, lesson_id, input):
               AND ($9 = 'file' OR (q.id IS NOT NULL AND (q.class_id = c.id OR q.lesson_id = l.id)))
            RETURNING *""",
         [teacher_id, lesson_id, input.get("quizId"), input["title"], input.get("description"),
-         dumps(input["instructions"]), input["dueAt"], input.get("points"), input["type"]],
+         dumps(input["instructions"]), normalize_timestamp(input["dueAt"]), input.get("points"), input["type"]],
     )
 
 
@@ -32,16 +32,16 @@ def detail(*, user_id, assignment_id):
     return query_one(
         f"""SELECT a.*, c.title AS class_name,
                    s.id AS submission_id, COALESCE(s.status, 'not_started') AS submission_status,
-                   COALESCE(s.completed_questions, 0)::int AS completed_questions,
+                   COALESCE(s.completed_questions, 0) AS completed_questions,
                    s.answers, s.is_late, s.submitted_at, s.graded_at, s.score, s.feedback,
-                   COALESCE((SELECT jsonb_agg(jsonb_build_object(
-                     'id', am.id, 'name', am.title, 'originalFilename', am.original_filename
-                   ) ORDER BY am.created_at) FROM assignment_materials am
-                     WHERE am.assignment_id = a.id), '[]'::jsonb) AS materials,
-                   COALESCE((SELECT jsonb_agg(jsonb_build_object(
-                     'id', sf.id, 'name', sf.original_filename, 'size', sf.byte_size
-                   ) ORDER BY sf.uploaded_at) FROM submission_files sf
-                     WHERE sf.submission_id = s.id), '[]'::jsonb) AS files
+                   (SELECT json_group_array(json_object(
+                      'id', am.id, 'name', am.title, 'originalFilename', am.original_filename
+                    ) ORDER BY am.created_at) FROM assignment_materials am
+                     WHERE am.assignment_id = a.id) AS "materials [JSONTEXT]",
+                   (SELECT json_group_array(json_object(
+                      'id', sf.id, 'name', sf.original_filename, 'size', sf.byte_size
+                    ) ORDER BY sf.uploaded_at) FROM submission_files sf
+                     WHERE sf.submission_id = s.id) AS "files [JSONTEXT]"
               FROM assignments a JOIN classes c ON c.id = a.class_id
               LEFT JOIN assignment_submissions s ON s.assignment_id = a.id AND s.user_id = $2
              WHERE a.id = $1 AND {ACCESS} AND a.status <> 'draft'""",
@@ -67,22 +67,21 @@ def save_quiz(*, user_id, assignment_id, answers, submit):
                  FROM assignments a JOIN classes c ON c.id = a.class_id
                 WHERE a.id = $1 AND a.assignment_type = 'quiz' AND a.status = 'published'
                   AND EXISTS (SELECT 1 FROM class_enrollments ce
-                    WHERE ce.class_id = c.id AND ce.user_id = $2 AND ce.status = 'active')
-                FOR UPDATE OF a""",
+                    WHERE ce.class_id = c.id AND ce.user_id = $2 AND ce.status = 'active')""",
             [assignment_id, user_id],
         )
         if not assignment:
             return None
         current = tx.query_one(
-            "SELECT * FROM assignment_submissions WHERE assignment_id = $1 AND user_id = $2 FOR UPDATE",
+            "SELECT * FROM assignment_submissions WHERE assignment_id = $1 AND user_id = $2",
             [assignment_id, user_id],
         )
         if current and current["status"] in ("submitted", "late", "graded"):
             return {"terminal": True, "row": current}
         valid = tx.rows(
             """SELECT qq.id FROM assignments a JOIN quiz_questions qq ON qq.quiz_id = a.quiz_id
-                WHERE a.id = $1 AND qq.id = ANY($2::uuid[])""",
-            [assignment_id, list(answers.keys())],
+                WHERE a.id = $1 AND qq.id IN (SELECT value FROM json_each($2))""",
+            [assignment_id, json_param(answers.keys())],
         )
         if len(valid) != len(answers):
             return {"invalidAnswers": True}
@@ -94,15 +93,15 @@ def save_quiz(*, user_id, assignment_id, answers, submit):
             """INSERT INTO assignment_submissions
                  (assignment_id, user_id, status, answers, completed_questions, is_late, submitted_at)
                VALUES ($1, $2,
-                 CASE WHEN $5 AND $4::timestamptz IS NOT NULL AND now() > $4::timestamptz THEN 'late'
+                 CASE WHEN $5 AND $4 IS NOT NULL AND now() > $4 THEN 'late'
                       WHEN $5 THEN 'submitted' ELSE 'in_progress' END,
                  $3, $6,
-                 CASE WHEN $5 THEN ($4::timestamptz IS NOT NULL AND now() > $4::timestamptz) ELSE false END,
+                 CASE WHEN $5 THEN ($4 IS NOT NULL AND now() > $4) ELSE 0 END,
                  CASE WHEN $5 THEN now() END)
                ON CONFLICT (assignment_id, user_id) DO UPDATE SET
-                 status = EXCLUDED.status, answers = EXCLUDED.answers,
-                 completed_questions = EXCLUDED.completed_questions,
-                 is_late = EXCLUDED.is_late, submitted_at = EXCLUDED.submitted_at
+                 status = excluded.status, answers = excluded.answers,
+                 completed_questions = excluded.completed_questions,
+                 is_late = excluded.is_late, submitted_at = excluded.submitted_at
                RETURNING *""",
             [assignment_id, user_id, dumps(merged), assignment["due_at"], submit, completed],
         )
@@ -115,14 +114,13 @@ def add_file(*, user_id, assignment_id, file):
             """SELECT a.id, a.due_at FROM assignments a JOIN classes c ON c.id = a.class_id
                 WHERE a.id = $1 AND a.assignment_type = 'file' AND a.allow_file_upload
                   AND a.status = 'published' AND EXISTS (SELECT 1 FROM class_enrollments ce
-                    WHERE ce.class_id = c.id AND ce.user_id = $2 AND ce.status = 'active')
-                FOR UPDATE OF a""",
+                    WHERE ce.class_id = c.id AND ce.user_id = $2 AND ce.status = 'active')""",
             [assignment_id, user_id],
         )
         if not assignment:
             return None
         current = tx.query_one(
-            "SELECT * FROM assignment_submissions WHERE assignment_id = $1 AND user_id = $2 FOR UPDATE",
+            "SELECT * FROM assignment_submissions WHERE assignment_id = $1 AND user_id = $2",
             [assignment_id, user_id],
         )
         if current and current["status"] in ("submitted", "late", "graded"):
@@ -131,10 +129,10 @@ def add_file(*, user_id, assignment_id, file):
             """INSERT INTO assignment_submissions
                  (assignment_id, user_id, status, is_late, submitted_at)
                VALUES ($1, $2,
-                 CASE WHEN $3::timestamptz IS NOT NULL AND now() > $3::timestamptz THEN 'late' ELSE 'submitted' END,
-                 $3::timestamptz IS NOT NULL AND now() > $3::timestamptz, now())
+                 CASE WHEN $3 IS NOT NULL AND now() > $3 THEN 'late' ELSE 'submitted' END,
+                 $3 IS NOT NULL AND now() > $3, now())
                ON CONFLICT (assignment_id, user_id) DO UPDATE SET
-                 status = EXCLUDED.status, is_late = EXCLUDED.is_late, submitted_at = EXCLUDED.submitted_at
+                 status = excluded.status, is_late = excluded.is_late, submitted_at = excluded.submitted_at
                RETURNING *""",
             [assignment_id, user_id, assignment["due_at"]],
         )
@@ -150,7 +148,7 @@ def add_file(*, user_id, assignment_id, file):
 def submissions(*, teacher_id, assignment_id):
     return query(
         """SELECT s.*, COALESCE(u.full_name, u.email, u.phone) AS student_name,
-                  count(sf.id)::int AS file_count
+                  count(sf.id) AS file_count
              FROM assignments a JOIN classes c ON c.id = a.class_id
              JOIN assignment_submissions s ON s.assignment_id = a.id
              JOIN users u ON u.id = s.user_id
@@ -163,11 +161,11 @@ def submissions(*, teacher_id, assignment_id):
 
 def grade(*, teacher_id, assignment_id, submission_id, score, feedback=None):
     return query_one(
-        """UPDATE assignment_submissions s SET status = 'graded', score = $4,
+        """UPDATE assignment_submissions AS s SET status = 'graded', score = $4,
                   feedback = $5, graded_by = $2, graded_at = now()
              FROM assignments a JOIN classes c ON c.id = a.class_id
             WHERE s.id = $3 AND s.assignment_id = $1 AND a.id = s.assignment_id
               AND c.teacher_id = $2 AND s.status IN ('submitted', 'late')
-            RETURNING s.*""",
+            RETURNING *""",
         [assignment_id, teacher_id, submission_id, score, feedback],
     )

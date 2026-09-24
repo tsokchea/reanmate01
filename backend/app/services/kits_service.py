@@ -49,15 +49,15 @@ def quota(user_id):
 
 
 def create(user_id, data):
-    """The cap is counted inside the insert's transaction, behind a per-user advisory lock."""
+    """The cap is counted inside the insert's write transaction."""
     user = users_db.find_by_id(user_id)
     if not user:
         raise ApiError.unauthorized("That account no longer exists")
     limit = plans_service.get_limit(user_id, "max_kits")
 
+    # BEGIN IMMEDIATE holds the database write lock from the count to the
+    # insert, so two simultaneous creates cannot both read "2 of 3".
     with transaction() as tx:
-        # hashtextextended keeps the lock key inside bigint for any uuid.
-        tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [user_id])
         used = kits_db.count_for_user(user_id, tx)
         plans_service.assert_capacity("max_kits", used, limit)
         kit_id = kits_db.create(

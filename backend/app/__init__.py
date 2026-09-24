@@ -11,7 +11,7 @@ from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .config import config
-from .extensions import open_pool
+from . import extensions
 from .middleware.errors import ApiError, register_error_handlers
 from .utils.response import apply_pending
 from .utils.schema import MISSING
@@ -116,6 +116,6 @@ def create_app():
 
     get_ai()
     get_notifier()
-    open_pool()
+    extensions.init_app(app)
 
     return app
