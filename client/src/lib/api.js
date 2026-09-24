@@ -1,6 +1,14 @@
 import axios from 'axios';
 
 /**
+ * Where the API lives. Defaults to same-origin `/api` (the Vite dev proxy, or
+ * the Vercel rewrite in production). Set VITE_API_URL — e.g.
+ * http://localhost:4000/api — to call the API directly; its CORS allowlist
+ * must then include this app's origin.
+ */
+export const API_BASE_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
+
+/**
  * The only axios instance the app uses.
  *
  * withCredentials is mandatory: the JWT lives in an httpOnly cookie, so the
@@ -8,7 +16,7 @@ import axios from 'axios';
  * the failure looks like a broken session rather than a missing flag.
  */
 export const api = axios.create({
-  baseURL: '/api',
+  baseURL: API_BASE_URL,
   withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
 });

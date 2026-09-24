@@ -1,5 +1,10 @@
 # dependencies
 node_modules/
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
 
 # build output
 client/dist/
@@ -14,6 +19,10 @@ client/.vite/
 server/.env
 server/.env.*
 !server/.env.example
+
+backend/.env
+backend/.env.*
+!backend/.env.example
 
 client/.env
 client/.env.*
@@ -31,6 +40,8 @@ client/.env.demo
 # uploads (multer local disk in dev; replace with S3/object storage before hosting)
 server/uploads/
 server/storage/
+backend/uploads/
+backend/storage/
 
 # logs
 *.log

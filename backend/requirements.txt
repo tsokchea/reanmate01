@@ -1,0 +1,30 @@
+# ReanMate API (Flask). Install with: pip install -r requirements.txt
+
+# Web framework, CORS, and the WSGI toolkit it runs on
+Flask>=3.1,<4
+flask-cors>=5.0,<7
+Werkzeug>=3.1,<4
+
+# PostgreSQL 16+ (with uuid-ossp, pg_trgm, pgvector) — raw parameterized SQL, no ORM
+psycopg[binary]>=3.2,<4
+psycopg-pool>=3.2,<4
+
+# Auth: HS256 JWT access tokens and bcrypt password hashes (compatible with the Node-issued ones)
+PyJWT>=2.9,<3
+bcrypt>=4.2,<6
+
+# Configuration from backend/.env
+python-dotenv>=1.0,<2
+
+# AI provider (falls back to the built-in mock when OPENAI_API_KEY is unset)
+openai>=1.60,<4
+
+# Ingest: PDF text extraction and YouTube transcript fetching
+pypdf>=5.0,<7
+httpx>=0.27,<1
+
+# Production WSGI server (Linux/macOS). On Windows use `python run.py` for development.
+gunicorn>=23.0; sys_platform != "win32"
+
+# Tests
+pytest>=8,<10

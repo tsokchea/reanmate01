@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { api, toFormError } from '../lib/api.js';
+import { API_BASE_URL, api, toFormError } from '../lib/api.js';
 
 const parseEventBlock = (block) => {
   let event = 'message';
@@ -57,7 +57,7 @@ export const useTutorChat = (kitId, language, sourceId = null, { enabled = true 
     try {
       for (let attempt = 0; attempt < 4 && !terminal; attempt += 1) {
         try {
-        const response = await fetch(`/api/chat/${sessionId}/stream`, {
+        const response = await fetch(`${API_BASE_URL}/chat/${sessionId}/stream`, {
           credentials: 'include',
           headers: { Accept: 'text/event-stream', ...(lastEventId && { 'Last-Event-ID': lastEventId }) },
           signal: controller.signal,
