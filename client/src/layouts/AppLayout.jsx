@@ -52,6 +52,13 @@ export const AppLayout = () => {
     window.addEventListener('reanmate:plan-wall', show);
     return () => window.removeEventListener('reanmate:plan-wall', show);
   }, []);
+  // A usage limit is not a plan upsell: it is an allowance, and it resets.
+  const [usageLimit, setUsageLimit] = useState(null);
+  useEffect(() => {
+    const show = (event) => setUsageLimit(event.detail?.code ?? null);
+    window.addEventListener('reanmate:usage-limit', show);
+    return () => window.removeEventListener('reanmate:usage-limit', show);
+  }, []);
 
   // Immersive screens (quiz, flashcards, tutor) own the full height and hide
   // the tab bar, matching the screenshots where it is absent.
@@ -68,6 +75,12 @@ export const AppLayout = () => {
     <div className="min-h-dvh bg-canvas">
       <div className="mx-auto flex min-h-dvh w-full max-w-[26rem] flex-col bg-canvas">
         {planWall && <div className="sticky top-0 z-30 flex items-center gap-3 bg-gold-400 px-4 py-3 text-sm font-semibold text-navy-900"><span className="flex-1">{t(planWall === 'feature_unavailable' ? 'plan.featureWall' : 'kits.quotaTitle')}</span><Link to="/" className="underline">{t('profile.upgrade')}</Link><button type="button" onClick={() => setPlanWall(null)} aria-label={t('common.close')}>×</button></div>}
+        {usageLimit && (
+          <div role="alert" className="sticky top-0 z-30 flex items-center gap-3 bg-danger-50 px-4 py-3 text-sm font-semibold text-danger-600">
+            <span className="flex-1">{t(`usageLimits.${usageLimit}`)}</span>
+            <button type="button" onClick={() => setUsageLimit(null)} aria-label={t('common.close')}>×</button>
+          </div>
+        )}
         <div className={immersive ? 'min-h-0 flex-1 overflow-y-auto' : 'min-h-0 flex-1 overflow-y-auto pb-24'}>
           <Outlet />
         </div>

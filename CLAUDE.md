@@ -21,6 +21,14 @@ JSON shapes, cookies and error envelope, so the client did not change.
 Prototype mode is retired. `client/src/mock/` is kept for backend-free design review
 behind a single `VITE_DEMO` flag, default off. The shipped default is the live API.
 
+**RBAC and the admin console are built** (`/admin` in the client, `/api/admin`
+in the API, migration 002). Roles and permissions, per-account usage limits
+with role defaults, usage tracking and an append-only audit log — see the
+"Admin console" section of `backend/README.md`. Permissions, limits and
+account status are always read from the database; the JWT's `role` claim is
+never trusted for authorization. The first super admin comes from
+`python -m scripts.create_super_admin`.
+
 **The mock AI and notify providers remain in place** — see the two sections below.
 They are not placeholders to be removed; they are the automatic fallback whenever a
 real key is absent, and every feature was built and tested against them.
@@ -96,6 +104,12 @@ through `backend/` endpoints under `/api`.
   Routes only wire things up (path, guard/validation steps, controller).
   Business logic lives in services. SQL lives in models.
 - No SQL string interpolation. Parameterized queries only (`$1`, `$2`).
+- Admin routes guard with `require_permission(...)` (`backend/app/middleware/permissions.py`);
+  per-account rules (no self-modification, no granting what you lack, super
+  admins untouchable by admins) live in `backend/app/services/rbac_service.py`.
+  Hiding a React link is never the security check.
+- New AI calls go through `track_generation` so they are metered and stopped
+  by the account's AI allowance.
 - Every endpoint validates its params, query and body before doing anything else,
   and keeps the `{ error: { code, message, details } }` envelope — the client maps
   `code` to copy and renders 422 `details` per field.

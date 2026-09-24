@@ -20,7 +20,13 @@ export const signupDestination = ({ onboarding, role }) => {
   return '/';
 };
 
-export const roleHome = (user) => (user?.role === 'teacher' ? '/teacher' : '/student');
+export const isAdminUser = (user) => user?.role === 'admin' || user?.role === 'super_admin';
+
+export const roleHome = (user) => {
+  if (user?.must_change_password) return '/account/password';
+  if (isAdminUser(user)) return '/admin';
+  return user?.role === 'teacher' ? '/teacher' : '/student';
+};
 
 export const RoleHomeRedirect = () => {
   const { user } = useAuth();
@@ -44,7 +50,7 @@ const DEMO = isDemo();
 
 /** Blocks a route until the session is known, then requires one. */
 export const RequireAuth = () => {
-  const { isLoading, isAuthenticated } = useAuth();
+  const { isLoading, isAuthenticated, user } = useAuth();
   const location = useLocation();
 
   // Prototype mode: every screen stays reachable by URL for review.
@@ -56,6 +62,27 @@ export const RequireAuth = () => {
     return <Navigate to="/auth" replace state={{ from: location.pathname }} />;
   }
 
+  // A temporary password opens nothing but the screen that replaces it (the
+  // API enforces the same).
+  if (user?.must_change_password && location.pathname !== '/account/password') {
+    return <Navigate to="/account/password" replace />;
+  }
+
+  return <Outlet />;
+};
+
+/**
+ * The admin console. Only decides where to send people — /api/admin checks
+ * every request against the account's role and permissions on its own.
+ */
+export const RequireAdmin = () => {
+  const { isLoading, isAuthenticated, user } = useAuth();
+
+  if (DEMO) return <Outlet />;
+  if (isLoading) return <FullPageSpinner />;
+  if (!isAuthenticated) return <Navigate to="/auth" replace />;
+  if (!isAdminUser(user)) return <Navigate to={roleHome(user)} replace />;
+
   return <Outlet />;
 };
 
@@ -65,7 +92,7 @@ export const RequireTeacher = () => {
   if (DEMO) return <Outlet />;
   if (isLoading) return <FullPageSpinner />;
   if (!isAuthenticated) return <Navigate to="/auth" replace />;
-  if (user?.role !== 'teacher') return <Navigate to="/student" replace />;
+  if (user?.role !== 'teacher') return <Navigate to={roleHome(user)} replace />;
 
   return <Outlet />;
 };
@@ -78,6 +105,7 @@ export const RequireStudentOnboarding = () => {
   if (isLoading) return <FullPageSpinner />;
   if (!isAuthenticated) return <Navigate to="/auth" replace />;
   if (user?.role === 'teacher') return <Navigate to="/teacher" replace />;
+  if (isAdminUser(user)) return <Navigate to="/admin" replace />;
 
   return <Outlet />;
 };

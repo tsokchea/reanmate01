@@ -6,6 +6,8 @@
  *
  * Interpolation uses {braces}: t('dashboard.welcome', { name: 'សុខជា' }).
  */
+import admin from './admin.km.js';
+
 export default {
   common: {
     appName: 'ReanMate',
@@ -81,6 +83,7 @@ export default {
     haveAccount: 'មានគណនីរួចហើយឬ?',
     noAccount: 'មិនទាន់មានគណនី ReanMate ឬ?',
     badCredentials: 'ព័ត៌មានចូលមិនត្រឹមត្រូវ',
+    signupsDisabled: 'ការចុះឈ្មោះថ្មីត្រូវបានផ្អាកជាបណ្ដោះអាសន្ន។ សូមព្យាយាមម្ដងទៀតនៅពេលក្រោយ។',
     termsNotice: 'ដោយបន្ត អ្នកយល់ព្រមតាមលក្ខខណ្ឌ និងគោលនយោបាយឯកជនរបស់យើង។',
   },
 
@@ -752,4 +755,20 @@ export default {
     fileMissing: 'ឯកសារនេះលែងមាននៅក្នុងឯកសារសិក្សានេះទៀតហើយ។ សូមត្រឡប់ក្រោយ ហើយជ្រើសរើសឯកសារផ្សេង។',
     fileNotReady: 'ឯកសារនេះកំពុងដំណើរការ។ ជម្រើសសិក្សានឹងបើកនៅពេលវារួចរាល់។',
   },
+  usageLimits: {
+    DAILY_AI_LIMIT_REACHED: 'អ្នកបានប្រើការអនុញ្ញាត AI សម្រាប់ថ្ងៃនេះអស់ហើយ។ វានឹងកំណត់ឡើងវិញនៅពាក់កណ្ដាលអធ្រាត្រ (UTC)។',
+    MONTHLY_AI_LIMIT_REACHED: 'អ្នកបានប្រើការអនុញ្ញាត AI សម្រាប់ខែនេះអស់ហើយ។',
+    DAILY_UPLOAD_LIMIT_REACHED: 'អ្នកបានដល់ដែនកំណត់ផ្ទុកឡើងសម្រាប់ថ្ងៃនេះហើយ។',
+    MONTHLY_UPLOAD_LIMIT_REACHED: 'អ្នកបានដល់ដែនកំណត់ផ្ទុកឡើងសម្រាប់ខែនេះហើយ។',
+    DAILY_ASSIGNMENT_LIMIT_REACHED: 'អ្នកបានដល់ដែនកំណត់កិច្ចការសម្រាប់ថ្ងៃនេះហើយ។',
+    MONTHLY_ASSIGNMENT_LIMIT_REACHED: 'អ្នកបានដល់ដែនកំណត់កិច្ចការសម្រាប់ខែនេះហើយ។',
+    DAILY_FLASHCARD_LIMIT_REACHED: 'អ្នកបានដល់ដែនកំណត់កាតរំលឹកសម្រាប់ថ្ងៃនេះហើយ។',
+    MONTHLY_FLASHCARD_LIMIT_REACHED: 'អ្នកបានដល់ដែនកំណត់កាតរំលឹកសម្រាប់ខែនេះហើយ។',
+    DAILY_TUTOR_LIMIT_REACHED: 'អ្នកបានដល់ដែនកំណត់សារគ្រូជំនួយសម្រាប់ថ្ងៃនេះហើយ។',
+    MONTHLY_TUTOR_LIMIT_REACHED: 'អ្នកបានដល់ដែនកំណត់សារគ្រូជំនួយសម្រាប់ខែនេះហើយ។',
+    DAILY_STORAGE_LIMIT_REACHED: 'អ្នកបានដល់ដែនកំណត់ទំហំផ្ទុកសម្រាប់ថ្ងៃនេះហើយ។',
+    MONTHLY_STORAGE_LIMIT_REACHED: 'អ្នកបានដល់ដែនកំណត់ទំហំផ្ទុកសម្រាប់ខែនេះហើយ។',
+  },
+
+  admin,
 };

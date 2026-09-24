@@ -7,6 +7,8 @@
  *
  * Interpolation uses {braces}: t('dashboard.welcome', { name: 'Sokchea' }).
  */
+import admin from './admin.en.js';
+
 export default {
   common: {
     appName: 'ReanMate',
@@ -82,6 +84,7 @@ export default {
     haveAccount: 'Already have an account?',
     noAccount: 'New to ReanMate?',
     badCredentials: 'Those credentials are not correct',
+    signupsDisabled: 'New sign-ups are paused right now. Please try again later.',
     termsNotice: 'By continuing, you agree to our Terms and Privacy Policy.',
   },
 
@@ -911,4 +914,22 @@ export default {
     fileMissing: 'That file is no longer in this kit. Go back and choose another one.',
     fileNotReady: 'This file is still being processed. The study options open as soon as it is ready.',
   },
+  // Server-side usage limits (DAILY_/MONTHLY_*_LIMIT_REACHED). Separate from
+  // the plan wall: these are per-account allowances an admin sets.
+  usageLimits: {
+    DAILY_AI_LIMIT_REACHED: 'You have used today\'s AI allowance. It resets at midnight (UTC).',
+    MONTHLY_AI_LIMIT_REACHED: 'You have used this month\'s AI allowance.',
+    DAILY_UPLOAD_LIMIT_REACHED: 'You have reached today\'s upload limit.',
+    MONTHLY_UPLOAD_LIMIT_REACHED: 'You have reached this month\'s upload limit.',
+    DAILY_ASSIGNMENT_LIMIT_REACHED: 'You have reached today\'s assignment limit.',
+    MONTHLY_ASSIGNMENT_LIMIT_REACHED: 'You have reached this month\'s assignment limit.',
+    DAILY_FLASHCARD_LIMIT_REACHED: 'You have reached today\'s flashcard limit.',
+    MONTHLY_FLASHCARD_LIMIT_REACHED: 'You have reached this month\'s flashcard limit.',
+    DAILY_TUTOR_LIMIT_REACHED: 'You have reached today\'s tutor message limit.',
+    MONTHLY_TUTOR_LIMIT_REACHED: 'You have reached this month\'s tutor message limit.',
+    DAILY_STORAGE_LIMIT_REACHED: 'You have reached today\'s file storage limit.',
+    MONTHLY_STORAGE_LIMIT_REACHED: 'You have reached this month\'s file storage limit.',
+  },
+
+  admin,
 };

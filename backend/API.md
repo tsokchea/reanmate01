@@ -22,7 +22,10 @@ Browsers must send credentials (`withCredentials: true` / `credentials: 'include
 When an access token expires, call `POST /auth/refresh` and retry.
 
 **Auth** column below: `none`, `user` (any signed-in account), `teacher`,
-`student`. A role check re-reads the account when the token predates a role change.
+`student`, or a permission such as `users.view` (admin console — see the last
+section). Every authenticated request re-reads the account's status, role and
+must-change-password flag, so disabling an account or changing its role takes
+effect on its next request.
 
 ### Errors
 
@@ -35,8 +38,12 @@ All errors share one envelope; `code` is stable and maps to client copy:
 | Status | `code` | When |
 | --- | --- | --- |
 | 400 | `bad_request`, `invalid_json` | Business-rule rejection; malformed JSON body |
-| 401 | `unauthorized` | No/expired session ("Sign in to continue", "That session has expired") |
+| 401 | `unauthorized`, `account_disabled` | No/expired session ("Sign in to continue", "That session has expired"); the account was disabled or deleted |
 | 403 | `forbidden`, `quota_exceeded`, `feature_unavailable` | Wrong role; plan cap reached; plan lacks the feature (`details.requiredPlan`) |
+| 403 | `password_change_required` | The account holds a temporary password; only `GET /auth/me` and `POST /auth/password` work |
+| 403 | `DAILY_AI_LIMIT_REACHED`, `MONTHLY_AI_LIMIT_REACHED`, `DAILY_/MONTHLY_UPLOAD_…`, `…_ASSIGNMENT_…`, `…_FLASHCARD_…`, `…_TUTOR_…`, `…_STORAGE_LIMIT_REACHED` | Per-account usage limit (`details`: `metric`, `period`, `limit`, `used`, `requested`, `resetsAt`) |
+| 403 | `signups_disabled` | Registration is paused in system settings |
+| 403 | `admin_access_required`, `permission_denied` (`details.required`), `permission_escalation`, `super_admin_required`, `super_admin_protected`, `target_outranks_actor`, `cannot_modify_self`, `system_role_locked`, `admin_account` | Admin console authorization — see the last section |
 | 404 | `not_found` | Missing, or not yours (never 403 for someone else's resource) |
 | 409 | `conflict` | State conflict (duplicate email → `details.field`, not ready, already submitted) |
 | 413 | `payload_too_large`, `file_too_large` | Body over 1 MB; upload over 25 MB (`details.limit`) |
@@ -98,6 +105,11 @@ Rotates the refresh token. `200 { "user": User }` + new cookies. `401` (cookies 
 
 ### `POST /auth/logout` — none
 Revokes the refresh token and clears cookies. `204`.
+
+### `POST /auth/password` — user (10/15 min per account)
+`{ "currentPassword", "newPassword" }` → `200 { "user": User }`. Clears a
+temporary password, signs out every other session and issues a fresh one.
+A wrong current password is a `422` on `currentPassword`.
 
 ### `GET /auth/me`, `GET /me` — user
 ```json
@@ -304,3 +316,79 @@ points ("10.00"), questionCount, type, allowFileUpload, materials`.
 | `GET /teacher/assistant/history` | — | `{ "conversations": [{ id, classId, classTitle, language, title, lastContent, lastMessageAt }] }` |
 | `DELETE /teacher/assistant/history` | — | `{ "cleared": true }` |
 | `POST /teacher/assistant/quiz` | `{ classId, sourceMaterialIds?, title?, language?, difficulty?, questionTypes?, count?, includeAnswerKey? }` | `{ "draft": { title, questions, classId } }`; `503` without an OpenAI key |
+
+## Admin console (`/api/admin`)
+
+Every route needs a session **and** an admin account (`role` `admin` or
+`super_admin`); students and teachers get `403 admin_access_required` on any
+path under `/api/admin`, including unknown ones. The permission column is
+checked on the server against the account's role and grants, loaded from the
+database on every request. Where one route serves several kinds of account,
+the service then applies the exact rule for the account it touches:
+
+| Action on… | student | teacher | admin / super admin |
+| --- | --- | --- | --- |
+| view | `users.view` or `students.view` | `users.view` or `teachers.view` | `admins.view` |
+| edit, reset password | `users.edit` | `users.edit` or `teachers.manage` | `admins.edit` |
+| disable / enable | `users.disable` | `users.disable` or `teachers.manage` | `admins.disable` |
+| delete | `users.delete` | `users.delete` | `admins.delete` |
+
+On top of that, for every change: nobody acts on their own account
+(`cannot_modify_self`), only a super admin touches a super admin
+(`super_admin_protected`) or creates / promotes one (`super_admin_required`),
+an admin never acts on an admin holding permissions it lacks
+(`target_outranks_actor`), and nobody grants a permission — through a role or
+an account — that they do not hold (`permission_escalation`). An account of a
+kind the admin cannot view answers `404`, not `403`. The last active super
+admin can never be disabled, demoted or deleted (`409`, `details.code:
+"last_super_admin"`).
+
+Rate limits: 240 reads and 60 writes per minute per admin; 20 password resets
+per 15 minutes.
+
+| Method & path | Permission | Request | Response |
+| --- | --- | --- | --- |
+| `GET /admin/me` | any admin | — | `{ user: Account, permissions: [key], isSuperAdmin }` |
+| `GET /admin/dashboard` | any admin (sections filtered) | — | `{ overview?, activity?, aiUsage?, content?, generatedAt }` |
+| `GET /admin/dashboard/series` | `analytics.view` or `usage.view` | `?range=today\|7d\|30d\|90d` | `{ range, granularity: hour\|day, points: [{ bucket, aiTokens, uploads, assignments, flashcards, activeUsers }] }` |
+| `GET /admin/users` | any `*.view` for accounts | `?tab=all\|students\|teachers\|admins\|disabled&q&sort=created\|name\|lastLogin\|aiUsage&page&pageSize` | `{ users: [Account], page, pageSize, total }` |
+| `POST /admin/users` | `users.create` | `{ fullName, email?, phone?, role: student\|teacher, temporaryPassword?, locale? }` | `201 { user, temporaryPassword? }` (generated when omitted; shown once) |
+| `GET /admin/users/{userId}` | view rule | — | `{ user, usage?, limits?, activity?, audit? }` (sections by permission) |
+| `PATCH /admin/users/{userId}` | edit rule | `{ fullName?, email?, phone?, role? }` | `{ user }` |
+| `POST /admin/users/{userId}/disable`, `/enable` | disable rule | — | `{ user }`; disabling revokes every session |
+| `DELETE /admin/users/{userId}` | delete rule | — | `{ deleted, id }` (soft delete: email freed, name cleared, history kept) |
+| `POST /admin/users/{userId}/reset-password` | edit rule | — | `{ temporaryPassword, mustChangePassword: true }` |
+| `GET /admin/admins` | `admins.view` | `?q&page&pageSize` | `{ admins: [Account + permissions, extraPermissions, limits?], … }` |
+| `POST /admin/admins` | `admins.create` | `{ fullName, email, roleId, temporaryPassword?, status?, permissions?: [key], limits?: Limits }` | `201 { admin, temporaryPassword? }` |
+| `GET /admin/admins/{userId}` | `admins.view` | — | as `GET /admin/users/{userId}` |
+| `PATCH /admin/admins/{userId}` | `admins.edit` | `{ fullName?, email?, roleId?, permissions? }` | `{ admin }` |
+| `DELETE /admin/admins/{userId}` | `admins.delete` | — | `{ deleted, id }` |
+| `GET /admin/roles` | `roles.view`, `roles.manage`, `admins.create` or `admins.edit` | — | `{ roles: [{ id, key, name, description, kind, isSystemRole, editable, userCount, permissions, limits? }] }` |
+| `POST /admin/roles` | `roles.manage` | `{ name, key?, description?, permissions }` | `201 { role }` |
+| `PATCH /admin/roles/{roleId}` | `roles.manage` | `{ name?, description?, permissions? }` | `{ role }`; student, teacher and super admin roles are locked |
+| `DELETE /admin/roles/{roleId}` | `roles.manage` | — | `{ deleted, id }`; `409` while any account holds it |
+| `GET /admin/permissions` | as `GET /admin/roles` | — | `{ permissions: [{ category, permissions: [{ key, description }] }] }` |
+| `GET /admin/usage` | `usage.view` | `?q&kind&page&pageSize` | `{ accounts: [{ …, today, month, limits }], … }` |
+| `GET /admin/usage/{userId}` | `usage.view` | — | `{ today: Usage, month: Usage, daily: [Usage + date] (30 days), limits? }` |
+| `POST /admin/usage/{userId}/reset` | `usage.manage` | — | today's counters set to zero |
+| `GET /admin/limits/defaults` | `limits.view` | — | `{ roles: [{ id, key, name, kind, limits: Limits }] }` |
+| `PATCH /admin/limits/defaults/{roleId}` | `limits.manage` | `Limits` (null = no limit) | `{ role: { id, key, limits } }` |
+| `GET /admin/limits/{userId}` | `limits.view` | — | `{ defaults, overrides, effective, source, usage }` |
+| `PATCH /admin/limits/{userId}` | `limits.manage` | `Limits` (null = inherit the role default) | same as GET |
+| `GET /admin/audit-logs` | `audit.view` | `?from&to&actor&actorId&action&target&targetId&page&pageSize` | `{ logs: [{ id, actor, actorId, action, target, targetId, resource, resourceId, metadata, ipAddress, userAgent, createdAt }], actions, … }` |
+| `GET /admin/settings` | `settings.view` or `settings.manage` | — | `{ settings: { usageLimitsEnabled, signupsEnabled } }` |
+| `PATCH /admin/settings` | `settings.manage` | `{ usageLimitsEnabled?, signupsEnabled? }` | as GET |
+| `GET /admin/content/sources` | `content.view` | `?q&kind&page&pageSize` | `{ items: [...], … }` |
+| `DELETE /admin/content/sources/{sourceId}` | `content.manage` | — | `{ deleted, id }` |
+| `GET /admin/content/classes` | `content.view` | `?q&page&pageSize` | `{ items, … }` |
+| `GET /admin/content/assignments` | `assignments.view` | `?q&page&pageSize` | `{ items, … }` |
+| `DELETE /admin/content/assignments/{assignmentId}` | `assignments.manage` | — | `{ deleted, id }` |
+| `GET /admin/content/flashcards` | `flashcards.view` | `?q&page&pageSize` | `{ items, … }` |
+| `DELETE /admin/content/flashcards/{setId}` | `flashcards.manage` | — | `{ deleted, id }` |
+
+`Limits` is any of `dailyAiTokens`, `monthlyAiTokens`, `dailyPdfUploads`,
+`monthlyPdfUploads`, `dailyAssignments`, `monthlyAssignments`,
+`dailyFlashcards`, `monthlyFlashcards`, `dailyTutorMessages`,
+`monthlyTutorMessages`, `dailyFileStorageBytes`, `monthlyFileStorageBytes`
+(non-negative integers or `null`). Bodies that change access or limits are
+strict: an unknown key is a `422`.

@@ -57,6 +57,15 @@ api.interceptors.response.use(
     if (planCode === 'quota_exceeded' || planCode === 'feature_unavailable') {
       window.dispatchEvent(new CustomEvent('reanmate:plan-wall', { detail: { code: planCode } }));
     }
+    // Per-account usage limits an admin sets (DAILY_AI_LIMIT_REACHED, ...).
+    if (typeof planCode === 'string' && /^(DAILY|MONTHLY)_[A-Z]+_LIMIT_REACHED$/.test(planCode)) {
+      window.dispatchEvent(
+        new CustomEvent('reanmate:usage-limit', { detail: { code: planCode, ...response.data.error.details } }),
+      );
+    }
+    if (planCode === 'password_change_required') {
+      window.dispatchEvent(new CustomEvent('reanmate:password-change'));
+    }
 
     if (!response || response.status !== 401 || !config) {
       return Promise.reject(error);

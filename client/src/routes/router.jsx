@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 
 import {
+  RequireAdmin,
   RequireAuth,
   RequireGuest,
   RequireStudentOnboarding,
@@ -66,6 +67,21 @@ import { ScreenIndexPage } from '../pages/ScreenIndexPage.jsx';
 import { PendingScreenPage } from '../pages/PendingScreenPage.jsx';
 import { FLOWS } from '../screens.js';
 import { NotFoundPage } from '../pages/NotFoundPage.jsx';
+import { ChangePasswordPage } from '../pages/ChangePasswordPage.jsx';
+import { AdminLayout, RequirePermission } from '../layouts/AdminLayout.jsx';
+import { AdminDashboardPage } from '../pages/admin/AdminDashboardPage.jsx';
+import { AdminUsersPage } from '../pages/admin/AdminUsersPage.jsx';
+import { AdminUserDetailPage } from '../pages/admin/AdminUserDetailPage.jsx';
+import { AdminAdminsPage } from '../pages/admin/AdminAdminsPage.jsx';
+import { AdminRolesPage } from '../pages/admin/AdminRolesPage.jsx';
+import { AdminUsagePage } from '../pages/admin/AdminUsagePage.jsx';
+import { AdminLimitsPage } from '../pages/admin/AdminLimitsPage.jsx';
+import { AdminContentIndex, AdminContentPage } from '../pages/admin/AdminContentPage.jsx';
+import { AdminAuditLogsPage } from '../pages/admin/AdminAuditLogsPage.jsx';
+import { AdminSettingsPage } from '../pages/admin/AdminSettingsPage.jsx';
+
+/** Hiding a page is UX only; the API behind it checks the same permissions. */
+const gated = (need, page) => <RequirePermission need={need}>{page}</RequirePermission>;
 
 /** Renders a sheet over the Kits tab so create/add stays in the kits section. */
 const SheetOver = ({ sheet }) => (
@@ -118,6 +134,7 @@ export const router = createBrowserRouter([
       {
         element: <RequireAuth />,
         children: [
+          { path: '/account/password', element: <ChangePasswordPage /> },
           {
             element: <RequireStudentOnboarding />,
             children: [
@@ -232,6 +249,39 @@ export const router = createBrowserRouter([
           // Every registered screen that is not built yet still resolves,
           // so the tab bar and the index never dead-end on a 404.
           ...pendingRoutes,
+        ],
+      },
+    ],
+  },
+
+  // Admin console — its own desktop shell, outside the phone-width app layout.
+  {
+    element: <RequireAuth />,
+    children: [
+      {
+        element: <RequireAdmin />,
+        children: [
+          {
+            element: <AdminLayout />,
+            children: [
+              { path: '/admin', element: <AdminDashboardPage /> },
+              { path: '/admin/users', element: gated(['users.view', 'students.view', 'teachers.view', 'admins.view'], <AdminUsersPage />) },
+              { path: '/admin/users/:userId', element: gated(['users.view', 'students.view', 'teachers.view', 'admins.view'], <AdminUserDetailPage />) },
+              { path: '/admin/students', element: gated(['users.view', 'students.view'], <AdminUsersPage key="students" fixedTab="students" />) },
+              { path: '/admin/teachers', element: gated(['users.view', 'teachers.view'], <AdminUsersPage key="teachers" fixedTab="teachers" />) },
+              { path: '/admin/admins', element: gated(['admins.view'], <AdminAdminsPage />) },
+              { path: '/admin/roles', element: gated(['roles.view', 'roles.manage'], <AdminRolesPage />) },
+              { path: '/admin/usage', element: gated(['usage.view'], <AdminUsagePage />) },
+              { path: '/admin/limits', element: gated(['limits.view'], <AdminLimitsPage />) },
+              { path: '/admin/content', element: <AdminContentIndex /> },
+              { path: '/admin/courses', element: <AdminContentPage key="classes" section="classes" /> },
+              { path: '/admin/pdfs', element: <AdminContentPage key="sources" section="sources" /> },
+              { path: '/admin/assignments', element: <AdminContentPage key="assignments" section="assignments" /> },
+              { path: '/admin/flashcards', element: <AdminContentPage key="flashcards" section="flashcards" /> },
+              { path: '/admin/audit-logs', element: gated(['audit.view'], <AdminAuditLogsPage />) },
+              { path: '/admin/settings', element: gated(['settings.view', 'settings.manage'], <AdminSettingsPage />) },
+            ],
+          },
         ],
       },
     ],

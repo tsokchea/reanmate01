@@ -139,6 +139,26 @@ export const AuthProvider = ({ children }) => {
     return data.user;
   }, []);
 
+  /** Replaces a temporary (or any) password; the server re-issues the session. */
+  const changePassword = useCallback(
+    async (payload) => {
+      const { data } = await api.post('/auth/password', payload);
+      setUser(data.user);
+      await reload();
+      return data.user;
+    },
+    [reload],
+  );
+
+  // The API answers 403 password_change_required when an admin has just reset
+  // this account's password; re-reading the session lets the guard route to
+  // the password screen.
+  useEffect(() => {
+    const onPasswordChange = () => reload();
+    window.addEventListener('reanmate:password-change', onPasswordChange);
+    return () => window.removeEventListener('reanmate:password-change', onPasswordChange);
+  }, [reload]);
+
   const submitSurvey = useCallback(async ({ answers, skipped = false, complete = false }) => {
     if (DEMO) {
       const { mockOnboarding } = await loadDemoFixtures();
@@ -170,8 +190,9 @@ export const AuthProvider = ({ children }) => {
       reload,
       chooseRole,
       submitSurvey,
+      changePassword,
     }),
-    [status, user, onboarding, register, login, logout, reload, chooseRole, submitSurvey],
+    [status, user, onboarding, register, login, logout, reload, chooseRole, submitSurvey, changePassword],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -102,7 +102,9 @@ export const AuthPage = () => {
             ? t('errors.network')
             : code === 'unauthorized'
               ? t('auth.badCredentials')
-              : (message ?? t('errors.generic')),
+              : code === 'signups_disabled'
+                ? t('auth.signupsDisabled')
+                : (message ?? t('errors.generic')),
         );
       }
       setBusy(false);

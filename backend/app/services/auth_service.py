@@ -103,6 +103,9 @@ def register(data):
             raise ApiError.conflict("That account already exists") from err
         raise
 
+    # Signing up signs you in: it is the account's first sign-in.
+    user_agent, ip_address = _client()
+    users_db.record_login(user["id"], ip_address, user_agent)
     return _issue_session(user)
 
 

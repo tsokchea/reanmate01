@@ -60,6 +60,8 @@ Other commands, from `backend/`:
 | --- | --- |
 | `python -m scripts.migrate` | Applies new files in `migrations/` once each; refuses a migration edited after it was applied |
 | `python -m scripts.recompute_lesson_progress` | Rebuilds the lesson progress roll-up from item progress |
+| `python -m scripts.create_super_admin --email you@example.com --name "You"` | Creates the first super admin (password from `SUPER_ADMIN_PASSWORD`, a prompt, or `--generate`); it must be changed at first sign-in |
+| `python -m scripts.create_super_admin --promote you@example.com` | Makes an existing account a super admin |
 
 ### Production
 
@@ -172,3 +174,43 @@ client always received: booleans as `true/false`, timestamps as
 SQLite allows one writer at a time. WAL mode keeps reads concurrent, which suits
 a single-instance deployment; to run several API instances, move to a
 client-server database.
+
+## Admin console, RBAC and usage limits
+
+Three separate controls, never mixed:
+
+| Control | Question | Where |
+| --- | --- | --- |
+| Permission | May this account do X at all? | `roles`, `role_permissions`, `user_permissions`; `app/services/rbac_service.py`, `app/middleware/permissions.py` |
+| Usage limit | How much of X per day / month? | `role_limits` (defaults) → `account_limits` (overrides); counted in `usage_records`; `app/services/usage_service.py` |
+| Rate limit | How many requests per minute? | `app/middleware/rate_limit.py` |
+
+Accounts: `users.role` is the account kind (`student`, `teacher`, `admin`,
+`super_admin`) and `users.role_id` its RBAC role. Students and teachers follow
+their kind automatically (a trigger keeps `role_id` in step); admins hold one
+admin role plus optional extra grants. A super admin holds every permission
+there is. Everything is resolved from the database on each request — never
+from the JWT or the request body.
+
+Built-in roles: `SUPER_ADMIN`, `FULL_ADMIN` (all but admin management, role
+management and settings), `SUPPORT_ADMIN` (`users.view`, `students.view`,
+`teachers.view`, `usage.view`), `CONTENT_ADMIN` (content, assignments and
+flashcards), `ANALYTICS_ADMIN` (`analytics.view`, `usage.view`), `TEACHER`,
+`STUDENT`. Custom roles are created in the console.
+
+Usage limits are enforced in the services before the work starts: tutor
+messages (`chat_service`), uploads and their bytes (`sources_service`,
+teacher materials and attachments, assignment submissions), assignments
+(`assignments_service`, `teacher_service`), flashcards (`flashcards_service`)
+and AI tokens (every `track_generation` call). Tokens are checked as "already
+at the limit" because a call's cost is only known afterwards; counters are
+checked with the amount about to be added. `usage_limits_enabled` in system
+settings switches enforcement off without losing the counts.
+
+The audit log (`audit_logs`) is append-only: triggers reject UPDATE and
+DELETE, it has no foreign keys (so deleting an account cannot rewrite it), and
+no API route changes it. Admin actions and their audit entries commit in one
+transaction.
+
+First run: `python -m scripts.migrate`, then create the first super admin with
+`python -m scripts.create_super_admin` (above) and sign in at `/admin`.
