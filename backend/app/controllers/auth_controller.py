@@ -29,6 +29,10 @@ def me():
     return respond(auth_service.me(g.auth["user_id"]))
 
 
+def change_password():
+    return respond({"user": auth_service.change_password(g.auth["user_id"], g.body)})
+
+
 # --- onboarding ---------------------------------------------------------------
 
 

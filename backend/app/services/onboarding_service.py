@@ -16,6 +16,11 @@ SURVEY_QUESTIONS = {
 
 
 def set_role(user_id, role):
+    current = users_db.find_by_id(user_id)
+    # Admin accounts are managed from the admin console; the role picker can
+    # only ever move an account between student and teacher.
+    if current and current["role"] in ("admin", "super_admin"):
+        raise ApiError(403, "admin_account", "Admin accounts cannot change their role here")
     user = users_db.set_role(user_id, role)
     if not user:
         raise ApiError.not_found("That account no longer exists")

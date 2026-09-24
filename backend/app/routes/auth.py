@@ -1,6 +1,6 @@
 """Health, auth, onboarding, profile and plan limits."""
 
-from flask import Blueprint
+from flask import Blueprint, g
 
 from ..controllers import auth_controller as auth
 from ..controllers import profile_controller as profile
@@ -9,7 +9,9 @@ from ..middleware.rate_limit import (
     login_rate_limit_by_ip,
     register_rate_limit_by_ip,
 )
+from ..middleware.rate_limit import FIFTEEN_MINUTES, rate_limit
 from ..middleware.validate import validate_body
+from ..validation import admin_schemas
 from ..validation import schemas as s
 from . import AUTH, add
 
@@ -26,6 +28,11 @@ add(bp, "POST", "/auth/refresh", auth.refresh)
 # Also unauthenticated — logging out with a dead access token must still clear cookies and revoke.
 add(bp, "POST", "/auth/logout", auth.logout)
 add(bp, "GET", "/auth/me", auth.me, AUTH)
+# Also the only way forward for an account holding a temporary password.
+add(bp, "POST", "/auth/password", auth.change_password, AUTH,
+    rate_limit(scope="password:user", window_ms=FIFTEEN_MINUTES, max_hits=10,
+               key_from=lambda: (g.get("auth") or {}).get("user_id")),
+    validate_body(admin_schemas.change_password_body))
 add(bp, "GET", "/me", auth.me, AUTH)  # top-level alias
 
 add(bp, "POST", "/onboarding/role", auth.set_role, AUTH, validate_body(s.role_schema))

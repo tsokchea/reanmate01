@@ -4,14 +4,21 @@ Every read selects an explicit column list rather than ``*``, so password_hash
 cannot leak into an API response by accident.
 """
 
+import datetime as dt
+import logging
+
 from ..extensions import query, query_one
+
+log = logging.getLogger("reanmate")
 
 PUBLIC_COLUMNS = """
   id, full_name, email, phone, avatar_url, role, locale,
   plan_tier, plan_status, trial_started_at, trial_ends_at, plan_period_end,
   phone_verified_at, email_verified_at, onboarding_completed_at,
-  status, last_seen_at, created_at, updated_at
+  status, must_change_password, last_seen_at, last_login_at, created_at, updated_at
 """
+
+LAST_SEEN_RESOLUTION = dt.timedelta(minutes=5)
 
 
 def create(*, full_name, email, phone, password_hash, locale=None, role, verified_at):
@@ -71,3 +78,34 @@ def mark_onboarding_complete(user_id):
 
 def touch_last_seen(user_id):
     query("UPDATE users SET last_seen_at = now() WHERE id = $1", [user_id])
+
+
+def record_login(user_id, ip_address, user_agent):
+    query("UPDATE users SET last_seen_at = now(), last_login_at = now() WHERE id = $1", [user_id])
+    query("INSERT INTO login_events (user_id, ip_address, user_agent) VALUES ($1, $2, $3)",
+          [user_id, ip_address, (user_agent or "")[:400] or None])
+
+
+def auth_state(user_id):
+    """What require_auth checks on every request: one primary-key read."""
+    return query_one("SELECT role, status, must_change_password, last_seen_at FROM users WHERE id = $1", [user_id])
+
+
+def touch_last_seen_throttled(user_id, last_seen_at):
+    """Keeps "active today" honest without a write on every request."""
+    now = dt.datetime.now(dt.timezone.utc)
+    if last_seen_at is not None and now - last_seen_at < LAST_SEEN_RESOLUTION:
+        return
+    try:
+        query("UPDATE users SET last_seen_at = now() WHERE id = $1", [user_id])
+    except Exception as err:  # a busy database must not fail the request
+        log.warning("[auth] could not update last_seen_at: %s", err)
+
+
+def find_with_password(user_id):
+    return query_one(f"SELECT {PUBLIC_COLUMNS}, password_hash FROM users WHERE id = $1 AND status = 'active'",
+                     [user_id])
+
+
+def change_password(user_id, password_hash):
+    query("UPDATE users SET password_hash = $2, must_change_password = 0 WHERE id = $1", [user_id, password_hash])

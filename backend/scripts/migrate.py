@@ -10,6 +10,13 @@ applied: migrations are immutable once applied — add a new one instead.
 
 Never edit, comment out or skip a statement to make a migration apply (see
 CLAUDE.md). Migration files must not contain their own BEGIN/COMMIT.
+
+A file whose first line is ``-- migrate: foreign-keys-off`` runs with foreign
+key enforcement off: SQLite's documented procedure for rebuilding a table
+that other tables reference (with enforcement on, dropping the old table
+would cascade-delete every child row). The pragma cannot change inside a
+transaction, so it is switched around it, and ``PRAGMA foreign_key_check``
+must come back empty before the file commits.
 """
 
 import hashlib
@@ -22,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.extensions import connection  # noqa: E402
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
+FOREIGN_KEYS_OFF = "-- migrate: foreign-keys-off"
 
 
 def checksum_of(data: bytes) -> str:
@@ -62,17 +70,30 @@ def run_migrations(conn=None):
         print(f"[migrate] apply {path.name}")
         sql = data.decode("utf-8")
         version = path.name.replace("'", "''")
+        foreign_keys_off = sql.lstrip().startswith(FOREIGN_KEYS_OFF)
+        if foreign_keys_off:
+            conn.execute("PRAGMA foreign_keys = OFF")
         try:
             # executescript runs the whole file; wrapping it in BEGIN/COMMIT
-            # makes the file and its ledger row one atomic unit.
+            # makes the file and its ledger row one atomic unit. The COMMIT is
+            # separate so a foreign-keys-off file is checked before it lands.
             conn.executescript(
                 f"BEGIN;\n{sql}\n;\nINSERT INTO schema_migrations (version, checksum) "
-                f"VALUES ('{version}', '{checksum}');\nCOMMIT;"
+                f"VALUES ('{version}', '{checksum}');"
             )
+            if foreign_keys_off:
+                broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+                if broken:
+                    raise sqlite3.IntegrityError(
+                        f"{len(broken)} foreign key violation(s), first: {tuple(broken[0])}")
+            conn.execute("COMMIT")
         except sqlite3.Error as err:
             if conn.in_transaction:
                 conn.execute("ROLLBACK")
             raise RuntimeError(f"Migration {path.name} failed: {err}") from err
+        finally:
+            if foreign_keys_off:
+                conn.execute("PRAGMA foreign_keys = ON")
         applied += 1
 
     print("[migrate] database already up to date" if applied == 0 else f"[migrate] applied {applied} migration(s)")

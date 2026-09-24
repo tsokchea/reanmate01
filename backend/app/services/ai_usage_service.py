@@ -12,6 +12,7 @@ import time
 from ..ai import get_ai
 from ..ai.types import create_usage_collector
 from ..models import ai_generations as ai_generations_db
+from . import usage_service
 
 log = logging.getLogger("reanmate")
 
@@ -38,6 +39,8 @@ def _write(row):
 def track_generation(*, kind, user_id=None, study_kit_id=None, source_id=None, language=None, source_text=None,
                      request=None, describe=None, run):
     """Runs one AI call and records what it cost; ``run(ai, on_usage)`` must pass on_usage through."""
+    # Usage limit: refuse before spending anything once the account is at its AI allowance.
+    usage_service.check(user_id, "ai_tokens")
     ai = get_ai()
     usage = create_usage_collector()
     started = time.time()
@@ -53,9 +56,11 @@ def track_generation(*, kind, user_id=None, study_kit_id=None, source_id=None, l
         total = usage.total()
         _write({**base, "model": total["model"], "response": {}, "status": "failed", "error_message": str(err),
                 "latency_ms": int((time.time() - started) * 1000), "usage": total})
+        usage_service.record_ai(user_id, total)
         raise
 
     total = usage.total()
+    usage_service.record_ai(user_id, total)
     _write({**base, "model": total["model"], "response": describe(result) if describe else {}, "status": "ok",
             "latency_ms": int((time.time() - started) * 1000), "usage": total})
     return result
@@ -65,6 +70,7 @@ def record_streamed_generation(*, kind="tutor", user_id=None, study_kit_id=None,
                                source_text=None, request=None, response=None, status="ok", error_message=None,
                                usage_total=None, started_at=None):
     """The streaming counterpart: the caller drives the stream and records once it ends."""
+    usage_service.record_ai(user_id, usage_total)
     return _write({
         "user_id": user_id, "study_kit_id": study_kit_id, "source_id": source_id, "kind": kind,
         "provider": get_ai().name, "model": (usage_total or {}).get("model"), "language": language,

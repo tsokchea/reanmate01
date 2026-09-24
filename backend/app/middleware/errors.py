@@ -90,6 +90,10 @@ def _unmatched_route():
         require_auth()
         if path == "/api/teacher" or path.startswith("/api/teacher/"):
             require_role("teacher")()
+        if path == "/api/admin" or path.startswith("/api/admin/"):
+            from .permissions import require_admin
+
+            require_admin()
     query = request.query_string.decode("latin-1")
     url = request.path + (f"?{query}" if query else "")
     raise ApiError.not_found(f"No route for {request.method} {url}")

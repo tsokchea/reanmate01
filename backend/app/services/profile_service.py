@@ -4,6 +4,7 @@ import datetime as dt
 
 from ..middleware.errors import ApiError
 from ..models import profile as profile_db
+from ..models import users as users_db
 
 
 def _streak_for(values):
@@ -40,6 +41,11 @@ def update(user_id, patch):
 
 
 def delete_account(user_id):
+    current = users_db.find_by_id(user_id)
+    # Removing an admin is an audited admin-console action, and the last
+    # super admin can never be removed at all.
+    if current and current["role"] in ("admin", "super_admin"):
+        raise ApiError(403, "admin_account", "Admin accounts are removed from the admin console")
     if not profile_db.delete_account(user_id):
         raise ApiError.unauthorized("That account is no longer active")
     return {"deleted": True}

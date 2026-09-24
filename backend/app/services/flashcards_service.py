@@ -9,6 +9,7 @@ from ..models import flashcards as flashcards_db
 from ..models import sources as sources_db
 from ..models import summaries as summaries_db
 from ..utils.js import normalize_option, now_ms
+from . import usage_service
 from .ai_usage_service import track_generation
 from .plans_service import plans_service
 from .sm2 import schedule_sm2_review
@@ -71,6 +72,7 @@ def _run_generation(payload):
         if not summaries_db.claim_cache(cache_id):
             return
         source = sources_db.find_by_id_unscoped(source_id)
+        usage_service.check(source["user_id"], "flashcards", params["count"])
         raw = track_generation(
             kind="flashcards", user_id=source["user_id"], study_kit_id=source["study_kit_id"], source_id=source_id,
             language=params["language"], source_text=source["extracted_text"],
@@ -82,6 +84,7 @@ def _run_generation(payload):
         )
         cards = validate_generated_flashcards(raw, params["count"])
         flashcards_db.save_generated(cache_id=cache_id, source=source, cards=cards, language=params["language"])
+        usage_service.record(source["user_id"], flashcards=len(cards))
     except Exception as err:
         summaries_db.fail_cache(cache_id, str(err))
     finally:
@@ -117,6 +120,9 @@ def prewarm(user_id, source_id, language):
 def generate(user_id, _plan, source_id, data):
     _require_source(user_id, source_id)
     params = {"count": plans_service.generation_count(user_id, "flashcards"), "language": data["language"]}
+    # Refused here, synchronously, so the screen gets the limit error rather than a failed deck.
+    usage_service.check(user_id, "flashcards", params["count"])
+    usage_service.check(user_id, "ai_tokens")
     if data.get("regenerate"):
         params["round"] = data["round"] if data.get("round") is not None else now_ms()
     cache = summaries_db.get_or_create_cache(summary_cache_key(source_id=source_id, method="generateFlashcards",

@@ -4,6 +4,7 @@ from ..middleware.errors import ApiError
 from ..middleware.upload import relative_upload_path, remove_uploaded_file, verify_uploaded_file
 from ..models import assignments as assignments_db
 from ..utils.serialization import UNDEFINED
+from . import usage_service
 from .assignment_state_machine import assert_assignment_transition
 
 
@@ -43,9 +44,11 @@ def _assignment_api(row):
 
 
 def create(teacher_id, lesson_id, data):
+    usage_service.check(teacher_id, "assignments", 1)
     row = assignments_db.create(teacher_id=teacher_id, lesson_id=lesson_id, input=data)
     if not row:
         raise ApiError.not_found("That lesson or quiz does not exist")
+    usage_service.record(teacher_id, assignments=1)
     return {"assignment": _assignment_api(row)}
 
 
@@ -84,12 +87,14 @@ def upload(user_id, assignment_id, file):
     verified = verify_uploaded_file(file)
     saved_file = {**file, **verified, "storagePath": relative_upload_path(file["path"])}
     try:
+        usage_service.check_upload(user_id, verified["byteSize"])
         result = assignments_db.add_file(user_id=user_id, assignment_id=assignment_id, file=saved_file)
         if not result:
             raise ApiError.not_found("That file assignment does not exist")
         if result.get("terminal"):
             raise ApiError.conflict("That assignment has already been submitted")
         assert_assignment_transition("not_started", result["row"]["status"])
+        usage_service.record_upload(user_id, verified["byteSize"])
         stored = result["file"]
         return {
             "submission": _submission_api(result["row"]),

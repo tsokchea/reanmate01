@@ -14,6 +14,7 @@ from flask import request
 
 from ..extensions import is_unique_violation
 from ..middleware.errors import ApiError
+from ..models import audit as audit_db
 from ..models import auth_sessions as auth_sessions_db
 from ..models import onboarding as onboarding_db
 from ..models import users as users_db
@@ -73,6 +74,9 @@ def _issue_session(user):
 
 
 def register(data):
+    if audit_db.setting("signups_enabled") is False:
+        raise ApiError(403, "signups_disabled", "New sign-ups are paused. Please try again later.")
+
     email = _normalize_email(data.get("email"))
     phone = _normalize_phone(data.get("phone"))
 
@@ -118,8 +122,37 @@ def login(data):
     if not user or not ok:
         raise ApiError.unauthorized("Those credentials are not correct")
 
-    users_db.touch_last_seen(user["id"])
+    user_agent, ip_address = _client()
+    users_db.record_login(user["id"], ip_address, user_agent)
     return _issue_session(user)
+
+
+def hash_password(password):
+    return bcrypt.hashpw(_password_bytes(password), bcrypt.gensalt(BCRYPT_ROUNDS)).decode()
+
+
+def change_password(user_id, data):
+    """Self-service. Clears a temporary password, and signs every other device out."""
+    user = users_db.find_with_password(user_id)
+    if not user:
+        raise ApiError(401, "account_disabled", "This account is no longer active")
+    try:
+        ok = bcrypt.checkpw(_password_bytes(data["currentPassword"]), user["password_hash"].encode())
+    except ValueError:
+        ok = False
+    if not ok:
+        raise ApiError(422, "validation_failed", "Request validation failed", [
+            {"path": "currentPassword", "code": "invalid_value", "message": "That password is not correct"}])
+    if data["currentPassword"] == data["newPassword"]:
+        raise ApiError(422, "validation_failed", "Request validation failed", [
+            {"path": "newPassword", "code": "invalid_value", "message": "Choose a password you have not used here"}])
+
+    users_db.change_password(user_id, hash_password(data["newPassword"]))
+    auth_sessions_db.revoke_all_for_user(user_id)
+    from . import audit_service  # local: audit_service imports flask request helpers only when used
+
+    audit_service.record("PASSWORD_CHANGED", actor_row=user, target=user, resource="user", resource_id=user_id)
+    return _issue_session(users_db.find_by_id(user_id))
 
 
 def logout():

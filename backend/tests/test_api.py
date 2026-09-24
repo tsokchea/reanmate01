@@ -68,7 +68,7 @@ def test_health(anon):
     assert r.status_code == 200
     body = r.get_json()
     assert body["status"] == "ok" and body["database"] == "up"
-    assert body["migrations"]["version"] == "001_initial_schema.sql"
+    assert body["migrations"]["version"] == "002_rbac_admin.sql"
     assert ISO.match(body["timestamp"])
 
 

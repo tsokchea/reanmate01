@@ -22,9 +22,9 @@ def add(bp, method, rule, view, *steps):
 
 
 def register_blueprints(app):
-    from . import auth, classes, kits, study, teacher
+    from . import admin, auth, classes, kits, study, teacher
 
-    for module in (auth, kits, study, classes, teacher):
+    for module in (auth, kits, study, classes, teacher, admin):
         app.register_blueprint(module.bp)
 
 

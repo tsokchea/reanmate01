@@ -32,15 +32,20 @@ def _require_context(teacher_id, class_id):
     }
 
 
-def _material_text(material, language):
+def _material_text(material, language, teacher_id=None):
     path = absolute_upload_path(material["storage_path"])
     if material["mime_type"] == "application/pdf":
         return extract_pdf(path)["fullText"]
     if (material["mime_type"] or "").startswith("image/"):
         with open(path, "rb") as handle:
             data = handle.read()
-        result = get_ai().extract_image_text(images=[{"data": data, "mimeType": material["mime_type"]}],
-                                             language=language)
+        result = track_generation(
+            kind="ocr", user_id=teacher_id, language=language,
+            request={"teacherMaterial": material.get("id")},
+            describe=lambda v: {"hasText": bool(v.get("hasText"))},
+            run=lambda ai, on_usage: ai.extract_image_text(
+                images=[{"data": data, "mimeType": material["mime_type"]}], language=language, on_usage=on_usage),
+        )
         return result["text"] if result["hasText"] else ""
     return extract_document(path, mime_type=material["mime_type"])["fullText"]
 
@@ -111,7 +116,7 @@ def generate_quiz(teacher_id, data):
         raise ApiError.bad_request("One or more source materials do not belong to this class")
 
     def extract(material):
-        return {"title": material["title"], "text": _material_text(material, data["language"])}
+        return {"title": material["title"], "text": _material_text(material, data["language"], teacher_id)}
 
     with ThreadPoolExecutor(max_workers=max(1, min(4, len(selected)))) as pool:
         extracted = list(pool.map(extract, selected))

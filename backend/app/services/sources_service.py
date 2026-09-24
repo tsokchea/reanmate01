@@ -9,7 +9,7 @@ from ..middleware.upload import absolute_upload_path, relative_upload_path, remo
 from ..models import kits as kits_db
 from ..models import sources as sources_db
 from ..utils.serialization import UNDEFINED
-from . import ingest_service
+from . import ingest_service, usage_service
 
 log = logging.getLogger("reanmate")
 
@@ -67,12 +67,14 @@ def create_from_upload(user_id, kit_id, file):
         if not kits_db.find_by_id(user_id=user_id, kit_id=kit_id):
             raise ApiError.not_found("That study kit does not exist")
         verified = verify_uploaded_file(file)  # magic-byte check
+        usage_service.check_upload(user_id, verified["byteSize"])
         name = os.path.basename(file["originalname"])
         inserted = sources_db.create(
             kit_id=kit_id, user_id=user_id, kind=verified["kind"], title=name, original_filename=name,
             storage_path=relative_upload_path(file["path"]), mime_type=file["mimetype"],
             byte_size=verified["byteSize"], metadata={"stage": "reading", "progressPercent": 10},
         )
+        usage_service.record_upload(user_id, verified["byteSize"])
         ingest_service.enqueue(inserted["id"])
         return to_api_source(sources_db.find_by_id_unscoped(inserted["id"]))
     except Exception:

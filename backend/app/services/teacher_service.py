@@ -1,10 +1,11 @@
 """The teacher workspace (server/src/services/teacher.service.js)."""
 
-from ..ai import get_ai
 from ..middleware.errors import ApiError
 from ..middleware.upload import absolute_upload_path, relative_upload_path, remove_uploaded_file, verify_uploaded_file
 from ..models import teacher as teacher_db
 from ..utils.js import js_trim
+from . import usage_service
+from .ai_usage_service import track_generation
 
 
 def _number(value):
@@ -125,9 +126,11 @@ def delete_assignment(teacher_id, assignment_id):
 
 
 def create_assignment(teacher_id, data):
+    usage_service.check(teacher_id, "assignments", 1)
     row = teacher_db.create_assignment(teacher_id=teacher_id, input=data)
     if not row:
         raise ApiError.not_found("That class or quiz does not exist, or it is not yours")
+    usage_service.record(teacher_id, assignments=1)
     return {"assignment": {
         "id": row["id"], "classId": row["class_id"], "lessonId": row["lesson_id"], "quizId": row["quiz_id"],
         "title": row["title"], "description": row["description"], "instructions": row["instructions"],
@@ -137,6 +140,7 @@ def create_assignment(teacher_id, data):
 
 
 def create_quiz(teacher_id, data):
+    usage_service.check(teacher_id, "assignments", 1)
     context = teacher_db.class_context(teacher_id=teacher_id, class_id=data["classId"])
     if not context:
         raise ApiError.not_found("That class does not exist or is not yours")
@@ -148,13 +152,19 @@ def create_quiz(teacher_id, data):
     if data.get("questions"):
         generated = {"title": data["title"], "questions": data["questions"]}
     else:
-        generated = get_ai().generate_quiz(text=text, title=data["title"], language=data["language"],
-                                           count=data["count"])
+        generated = track_generation(
+            kind="quiz", user_id=teacher_id, language=data["language"], source_text=text,
+            request={"teacherQuiz": True, "classId": data["classId"], "count": data["count"]},
+            describe=lambda v: {"questionCount": len((v or {}).get("questions") or [])},
+            run=lambda ai, on_usage: ai.generate_quiz(text=text, title=data["title"], language=data["language"],
+                                                      count=data["count"], on_usage=on_usage),
+        )
     if not (generated or {}).get("questions"):
         raise ApiError.bad_request("The quiz could not be generated")
     result = teacher_db.create_quiz(teacher_id=teacher_id, input=data, quiz=generated)
     if not result:
         raise ApiError.not_found("That class does not exist or is not yours")
+    usage_service.record(teacher_id, assignments=1)
     quiz = result["quiz"]
     return {"quiz": {"id": quiz["id"], "title": quiz["title"], "questionCount": quiz["question_count"]},
             "assignment": result["assignment"]}
@@ -166,9 +176,11 @@ def add_assignment_attachment(teacher_id, assignment_id, file):
     verified = verify_uploaded_file(file)
     saved_file = {**file, **verified, "storagePath": relative_upload_path(file["path"])}
     try:
+        usage_service.check_upload(teacher_id, verified["byteSize"])
         row = teacher_db.add_assignment_attachment(teacher_id=teacher_id, assignment_id=assignment_id, file=saved_file)
         if not row:
             raise ApiError.not_found("That assignment does not exist or is not yours")
+        usage_service.record_upload(teacher_id, verified["byteSize"])
         return {"material": {
             "id": row["id"], "assignmentId": row["assignment_id"], "title": row["title"],
             "originalFilename": row["original_filename"], "mimeType": row["mime_type"],
@@ -205,6 +217,7 @@ def add_material(teacher_id, class_id, file, title=None, week_number=1):
     verified = verify_uploaded_file(file)
     saved_file = {**file, **verified, "storagePath": relative_upload_path(file["path"])}
     try:
+        usage_service.check_upload(teacher_id, verified["byteSize"])
         week = _js_number(week_number)  # Number(weekNumber) || 1: NaN and 0 fall back to week 1
         week = 1 if week != week or week == 0 else (int(week) if float(week).is_integer() else week)
         row = teacher_db.add_material(
@@ -214,6 +227,7 @@ def add_material(teacher_id, class_id, file, title=None, week_number=1):
         )
         if not row:
             raise ApiError.not_found("That class does not exist or is not yours")
+        usage_service.record_upload(teacher_id, verified["byteSize"])
         return {"material": {
             "id": row["id"], "title": row["title"], "originalFilename": row["original_filename"],
             "mimeType": row["mime_type"], "byteSize": _number(row["byte_size"]), "createdAt": row["created_at"],

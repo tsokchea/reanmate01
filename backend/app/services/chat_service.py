@@ -20,6 +20,7 @@ from ..models import chat as chat_db
 from ..models import chunks as chunks_db
 from ..models import kits as kits_db
 from ..utils.js import parse_int
+from . import usage_service
 from .ai_usage_service import detect_cost_language, record_streamed_generation, track_generation
 from .plans_service import plans_service
 from .reply_language import detect_requested_reply_language
@@ -150,21 +151,31 @@ def _run_producer(session, entry):
 def explain(user_id, data):
     if not kits_db.find_by_id(user_id=user_id, kit_id=data["kitId"]):
         raise ApiError.not_found("That study kit does not exist")
-    ai = get_ai()
     reply_language = detect_requested_reply_language(data["content"], data["language"])
-    embedded = ai.embed(texts=[data["content"]])
-    matches = chunks_db.cosine_search_for_kit(kit_id=data["kitId"], source_id=data.get("sourceId"),
-                                              embedding=embedded["embeddings"][0], limit=3)
-    content, citations = "", []
-    for chunk in ai.tutor_reply(messages=[{"role": "user", "content": data["content"]}], language=reply_language,
-                                sources=_sources_from(matches), max_output_tokens=400):
-        if chunk["type"] == "delta":
-            content += chunk["text"]
-        if chunk["type"] == "done":
-            citations = chunk["citations"]
-        if chunk["type"] == "error":
-            raise RuntimeError(chunk["message"])
-    return {"content": content, "citations": citations, "language": reply_language}
+
+    def run(ai, on_usage):
+        embedded = ai.embed(texts=[data["content"]], on_usage=on_usage)
+        matches = chunks_db.cosine_search_for_kit(kit_id=data["kitId"], source_id=data.get("sourceId"),
+                                                  embedding=embedded["embeddings"][0], limit=3)
+        content, citations = "", []
+        for chunk in ai.tutor_reply(messages=[{"role": "user", "content": data["content"]}],
+                                    language=reply_language, sources=_sources_from(matches), max_output_tokens=400,
+                                    on_usage=on_usage):
+            if chunk["type"] == "delta":
+                content += chunk["text"]
+            if chunk["type"] == "done":
+                citations = chunk["citations"]
+            if chunk["type"] == "error":
+                raise RuntimeError(chunk["message"])
+        return {"content": content, "citations": citations}
+
+    # Tracked like every other AI call, so it counts toward (and is stopped by) the AI allowance.
+    result = track_generation(
+        kind="tutor", user_id=user_id, study_kit_id=data["kitId"], language=reply_language,
+        source_text=data["content"], request={"explain": True},
+        describe=lambda v: {"answerChars": len(v["content"])}, run=run,
+    )
+    return {**result, "language": reply_language}
 
 
 def history(user_id, language):
@@ -196,6 +207,8 @@ def conversation(user_id, kit_id, language, _plan, source_id=None):
 
 
 def create(user_id, _plan, data):
+    usage_service.check(user_id, "tutor_messages", 1)
+    usage_service.check(user_id, "ai_tokens")
     limit = plans_service.get_limit(user_id, "tutor_messages_per_month")
     result = chat_db.create_session(user_id=user_id, kit_id=data["kitId"], source_id=data.get("sourceId"),
                                     language=data["language"], content=data["content"], limit=limit)
@@ -204,6 +217,7 @@ def create(user_id, _plan, data):
     if result.get("quotaExceeded"):
         raise ApiError(429, "quota_exceeded", "Tutor message limit reached",
                        {"used": result["used"], "limit": result["limit"]})
+    usage_service.record(user_id, tutor_messages=1)
     return {
         "sessionId": result["assistantMessage"]["id"],
         "userMessage": _to_message(result["userMessage"]),
@@ -214,6 +228,7 @@ def create(user_id, _plan, data):
 
 
 def retry(user_id, _plan, session_id):
+    usage_service.check(user_id, "ai_tokens")
     limit = plans_service.get_limit(user_id, "tutor_messages_per_month")
     result = chat_db.create_retry(user_id=user_id, session_id=session_id, limit=limit)
     if result.get("missing"):
