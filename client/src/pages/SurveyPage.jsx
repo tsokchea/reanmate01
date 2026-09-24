@@ -23,7 +23,7 @@ import {
  * docs/screens/01-auth-onboarding/05, 06 and 07 — one component, three steps.
  *
  * The option ids here MUST match SURVEY_QUESTIONS in
- * server/src/services/onboarding.service.js. The server validates with
+ * backend/app/services/onboarding_service.py. The server validates with
  * strictObject, so a drifted id comes back as a 422 rather than being silently
  * dropped — and this page renders that as a visible error on the question.
  */

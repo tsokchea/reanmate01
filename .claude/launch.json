@@ -3,12 +3,9 @@
   "configurations": [
     {
       "name": "reanmate-server",
-      "runtimeExecutable": "npm",
+      "runtimeExecutable": "backend/venv/Scripts/python.exe",
       "runtimeArgs": [
-        "--prefix",
-        "server",
-        "run",
-        "dev"
+        "backend/run.py"
       ],
       "port": 4000
     },

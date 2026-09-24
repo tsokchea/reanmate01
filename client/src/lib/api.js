@@ -6,7 +6,8 @@ import axios from 'axios';
  * http://localhost:4000/api — to call the API directly; its CORS allowlist
  * must then include this app's origin.
  */
-export const API_BASE_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
+// `import.meta.env` only exists under Vite; plain Node (the unit tests) has none.
+export const API_BASE_URL = (import.meta.env?.VITE_API_URL || '/api').replace(/\/+$/, '');
 
 /**
  * The only axios instance the app uses.

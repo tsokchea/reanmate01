@@ -3,11 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Bilingual (Khmer/English) study app — React client + Express API.",
+  "description": "Bilingual (Khmer/English) study app — React client + Flask (Python) API. See backend/README.md to run the API.",
   "scripts": {
-    "dev": "npm run dev --prefix server",
-    "dev:client": "npm run dev --prefix client",
-    "migrate": "npm run migrate --prefix server"
+    "dev:client": "npm run dev --prefix client"
   },
   "engines": {
     "node": ">=20"

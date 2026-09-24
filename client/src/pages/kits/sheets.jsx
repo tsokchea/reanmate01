@@ -20,7 +20,7 @@ import { useLanguage, useT } from '../../i18n/index.js';
 import { buildProcessingNavigation, isSourceReadyForStudy } from './processingFlow.js';
 
 /**
- * What the server's fileFilter accepts (server/src/middleware/upload.js). Kept
+ * What the server's fileFilter accepts (backend/app/middleware/upload.py). Kept
  * in step by hand — the accept attribute is a convenience for the file picker,
  * never the check that matters; the server re-validates mime, extension and
  * magic bytes on every upload.
@@ -659,7 +659,7 @@ export const TopicSheet = () => {
       }
 
       // `difficulty` is sent but not yet honoured: createSourceSchema
-      // (server/src/validation/kits.schemas.js) does not declare it, and zod
+      // (backend/app/validation/schemas.py) does not declare it, and zod
       // strips unknown keys, so the server drops it. Teaching the topic
       // generator to read it is a server change, not a styling one.
       const { data } = await api.post(`/kits/${targetKitId}/sources`, {
@@ -735,7 +735,7 @@ export const TopicSheet = () => {
  * The stages the server reports, in order: reading, extracting and embedding
  * are the ingest of the text itself; `generating` is the model building the
  * study guide, quiz and flashcards; then `ready`
- * (server/src/services/ingest.service.js).
+ * (backend/app/services/ingest_service.py).
  *
  * `ready` now means the materials exist, not merely that the text was chunked —
  * which is why the last step can honestly say it is creating them.
