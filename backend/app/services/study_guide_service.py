@@ -9,6 +9,7 @@ each claimed separately so a failure costs one module rather than the guide.
 from concurrent.futures import ThreadPoolExecutor
 
 from ..ai import get_ai
+from ..config import config
 from ..jobs import queue as job_queue
 from ..models import study_guide as study_guide_db
 from ..models import summaries as summaries_db
@@ -93,11 +94,11 @@ def _run_study_guide(payload):
                 study_guide_db.fail_module(cache_id, row["position"])
 
         rows = [r for r in study_guide_db.list_modules(cache_id) if r["status"] != "ready"]
-        # Four concurrent calls shorten the dominant phase while leaving headroom
-        # for provider rate limits and database connections.
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            for start in range(0, len(rows), 4):
-                list(pool.map(generate_module, rows[start:start + 4]))
+        # Every module at once (up to AI_MAX_CONCURRENCY): the guide then takes
+        # as long as its slowest module rather than the sum of several rounds.
+        if rows:
+            with ThreadPoolExecutor(max_workers=min(config.AI_MAX_CONCURRENCY, len(rows))) as pool:
+                list(pool.map(generate_module, rows))
         study_guide_db.finish(cache_id)
     except Exception as err:
         summaries_db.fail_cache(cache_id, str(err))

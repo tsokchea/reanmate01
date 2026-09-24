@@ -50,7 +50,13 @@ class Config:
     # Keep the deployed frontend available even when an old env value is still
     # present. Additional staging or preview origins remain configurable.
     CORS_ORIGINS = list(
-        dict.fromkeys(["http://localhost:5173", "https://z-rean-mate.vercel.app", *_configured_cors])
+        dict.fromkeys([
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://172.17.208.1:5173",
+            "https://z-rean-mate.vercel.app",
+            *_configured_cors,
+        ])
     )
 
     JSON_BODY_LIMIT = _byte_limit(os.environ.get("JSON_BODY_LIMIT"), 1024 * 1024)
@@ -69,6 +75,14 @@ class Config:
     OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL") or None
     OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
     OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+    # Background generations (summaries, study guides) may use OpenAI's cheaper
+    # "flex" tier. It measured ~2x slower, so it is opt-in: speed wins by default.
+    OPENAI_USE_FLEX = os.environ.get("OPENAI_USE_FLEX", "").strip().lower() in ("1", "true", "yes")
+    # How many AI requests one generation may have in flight at once
+    # (study-guide modules, chapter bodies, mock-exam parts).
+    AI_MAX_CONCURRENCY = max(1, _to_int(os.environ.get("AI_MAX_CONCURRENCY"), 8))
+    # Background job workers: ingest and on-demand generations run side by side.
+    JOB_WORKERS = max(1, _to_int(os.environ.get("JOB_WORKERS"), 4))
 
     # Likewise absent — app/notify falls back to the mock notifier.
     SMS_PROVIDER = os.environ.get("SMS_PROVIDER") or None

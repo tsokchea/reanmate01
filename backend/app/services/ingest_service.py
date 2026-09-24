@@ -10,6 +10,7 @@
 """
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from ..extensions import transaction
@@ -32,34 +33,42 @@ log = logging.getLogger("reanmate")
 # wait into the progress bar the student is already watching. ``percent`` is
 # reported before the step runs, so the bar moves with the work.
 STUDY_MATERIALS = [
-    # The slowest (an outline plus one call per module), so it runs first.
-    {"percent": 65, "run": lambda c: study_guide_service.prewarm(c["sourceId"], c["language"])},
-    {"percent": 75, "run": lambda c: summaries_service.prewarm(c["sourceId"], c["language"])},
-    {"percent": 80, "run": lambda c: quiz_service.prewarm(c["userId"], c["sourceId"], c["language"])},
-    {"percent": 85, "run": lambda c: mock_exam_service.prewarm(c["sourceId"], c["language"])},
-    {"percent": 90, "run": lambda c: flashcards_service.prewarm(c["userId"], c["sourceId"], c["language"])},
+    {"name": "study guide", "run": lambda c: study_guide_service.prewarm(c["sourceId"], c["language"])},
+    {"name": "summary", "run": lambda c: summaries_service.prewarm(c["sourceId"], c["language"])},
+    {"name": "quiz", "run": lambda c: quiz_service.prewarm(c["userId"], c["sourceId"], c["language"])},
+    {"name": "mock exam", "run": lambda c: mock_exam_service.prewarm(c["sourceId"], c["language"])},
+    {"name": "flashcards", "run": lambda c: flashcards_service.prewarm(c["userId"], c["sourceId"], c["language"])},
 ]
+
+# Progress while generating: 65% at the start, climbing evenly to 90% as each
+# material lands (the last 10% is marking the source ready).
+GENERATING_START_PERCENT = 65
+GENERATING_END_PERCENT = 90
 
 
 def _generate_study_materials(context):
-    """A failed generation is logged and stepped over; the screen that needs it generates on demand."""
-    study_guide, *remaining = STUDY_MATERIALS
-    sources_db.update_status(context["sourceId"], stage="generating", progress_percent=study_guide["percent"])
-    try:
-        study_guide["run"](context)
-    except Exception as err:
-        log.error("[ingest] source %s: study material at %s%% failed: %s", context["sourceId"], study_guide["percent"], err)
-
-    sources_db.update_status(context["sourceId"], stage="generating", progress_percent=75)
+    """Every material is generated at once, so ingest waits for the slowest one
+    rather than the sum of all five. A failed generation is logged and stepped
+    over; the screen that needs it generates on demand."""
+    source_id = context["sourceId"]
+    sources_db.update_status(source_id, stage="generating", progress_percent=GENERATING_START_PERCENT)
+    done = 0
+    lock = threading.Lock()
 
     def run(step):
+        nonlocal done
         try:
             step["run"](context)
         except Exception as err:
-            log.error("[ingest] source %s: study material at %s%% failed: %s", context["sourceId"], step["percent"], err)
+            log.error("[ingest] source %s: %s generation failed: %s", source_id, step["name"], err)
+        with lock:
+            done += 1
+            span = GENERATING_END_PERCENT - GENERATING_START_PERCENT
+            percent = GENERATING_START_PERCENT + span * done // len(STUDY_MATERIALS)
+            sources_db.update_status(source_id, stage="generating", progress_percent=percent)
 
-    with ThreadPoolExecutor(max_workers=len(remaining)) as pool:
-        list(pool.map(run, remaining))
+    with ThreadPoolExecutor(max_workers=len(STUDY_MATERIALS)) as pool:
+        list(pool.map(run, STUDY_MATERIALS))
 
 
 def enqueue(source_id):

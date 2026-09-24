@@ -20,7 +20,7 @@ the same, so the client needed no functional changes. Endpoint reference:
 | Validation | `app/utils/schema.py`, a small zod-compatible validator (same 422 `details` the client renders) |
 | AI | OpenAI (`openai` SDK), falling back to a built-in mock when `OPENAI_API_KEY` is unset |
 | Ingest | `pypdf` (PDF), stdlib `zipfile` + regex (Word/Excel/PowerPoint), `httpx` (YouTube) |
-| Background work | In-process job queue (one worker thread) |
+| Background work | In-process job queue (`JOB_WORKERS` threads) |
 
 ## Run it
 
@@ -92,6 +92,9 @@ python-dotenv). Names are unchanged from the Node server. See `.env.example`.
 | `JSON_BODY_LIMIT` | `1mb` | |
 | `OPENAI_API_KEY` | unset | Unset → mock AI provider |
 | `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_EMBEDDING_MODEL` | | |
+| `AI_MAX_CONCURRENCY` | `8` | AI requests one generation may run at once |
+| `JOB_WORKERS` | `4` | Background jobs that run side by side |
+| `OPENAI_USE_FLEX` | `false` | `true` → cheaper, ~2x slower "flex" tier for background generations |
 | `SMS_PROVIDER`, `EMAIL_PROVIDER` | unset | Unset → mock notifier |
 
 ## Layout

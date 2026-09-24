@@ -8,8 +8,10 @@ cache row and hand the work to the queue for a polling screen to collect.
 import hashlib
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from ..ai import get_ai
+from ..config import config
 from ..jobs import queue as job_queue
 from ..middleware.errors import ApiError
 from ..models import sources as sources_db
@@ -158,9 +160,9 @@ def _run_chapters(payload):
             outline = outlined["outline"]
             summaries_db.save_outline(cache_id=cache_id, source=source, outline=outline, language=language)
 
-        for row in [r for r in summaries_db.list_chapters(cache_id) if r["status"] != "ready"]:
+        def generate_chapter(row):
             if not summaries_db.claim_chapter(cache_id, row["chapter_index"]):
-                continue
+                return
             try:
                 generated = track_generation(
                     kind="summary", user_id=source["user_id"], study_kit_id=source["study_kit_id"],
@@ -176,6 +178,13 @@ def _run_chapters(payload):
                 summaries_db.save_chapter(cache_id=cache_id, chapter=generated["chapters"][0], model=ai.name)
             except Exception:
                 summaries_db.fail_chapter(cache_id, row["chapter_index"])
+
+        # Chapter bodies are independent, so they are written concurrently; each
+        # is still claimed and saved on its own, so a failure costs one chapter.
+        pending = [r for r in summaries_db.list_chapters(cache_id) if r["status"] != "ready"]
+        if pending:
+            with ThreadPoolExecutor(max_workers=min(config.AI_MAX_CONCURRENCY, len(pending))) as pool:
+                list(pool.map(generate_chapter, pending))
         summaries_db.finish_chapters(cache_id)
     except Exception as err:
         summaries_db.fail_cache(cache_id, str(err))

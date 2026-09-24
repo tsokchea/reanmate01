@@ -351,3 +351,25 @@ def test_grading_order_and_usage():
     AI.grade_written_answers(language="en", answers=[{"prompt": "a", "expectedAnswer": "b", "response": "c"}],
                              on_usage=reported.append)
     assert len(reported) == 1
+
+
+@pytest.mark.parametrize("count", [1, 3, 10, 12, 20, 30, 40])
+def test_mock_exam_parts_keep_count_and_difficulty_mix(count):
+    from app.ai.openai_provider import OpenAIProvider
+
+    parts = OpenAIProvider._mock_exam_parts(count)
+    assert sum(n for _, n, _ in parts) == count
+    assert all(0 < n <= OpenAIProvider.MOCK_EXAM_PART_SIZE for _, n, _ in parts)
+    by_difficulty = {}
+    for difficulty, n, _ in parts:
+        by_difficulty[difficulty] = by_difficulty.get(difficulty, 0) + n
+    if count >= 4:
+        assert set(by_difficulty) == {"easy", "medium", "hard"}
+        assert by_difficulty["medium"] >= by_difficulty["easy"]
+
+
+def test_mock_exam_parts_for_a_full_exam():
+    from app.ai.openai_provider import OpenAIProvider
+
+    assert OpenAIProvider._mock_exam_parts(30) == [
+        ("easy", 8, None), ("medium", 7, (1, 2)), ("medium", 7, (2, 2)), ("hard", 8, None)]

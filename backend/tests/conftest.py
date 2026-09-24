@@ -12,7 +12,9 @@ _TMP = tempfile.mkdtemp(prefix="reanmate-tests-")
 os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(_TMP, "test.db").replace("\\", "/")
 os.environ["UPLOAD_DIR"] = os.path.join(_TMP, "uploads")
 os.environ["JWT_SECRET"] = "test-secret-that-is-at-least-32-bytes-long"
-os.environ.pop("OPENAI_API_KEY", None)  # always the mock provider under test
+# Empty rather than removed: load_dotenv() never overrides a variable that is
+# already set, but would re-add one that is missing from backend/.env.
+os.environ["OPENAI_API_KEY"] = ""  # always the mock provider under test
 
 import pytest  # noqa: E402
 

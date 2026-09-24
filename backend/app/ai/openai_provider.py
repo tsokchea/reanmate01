@@ -359,8 +359,9 @@ class OpenAIProvider:
                     reasoning_effort=None, on_usage=None):
         def build(skip):
             params = {"model": self.model}
-            # OpenAI calls the batch-priced tier "flex" on live requests.
-            if service_tier == "batch" and "service_tier" not in skip:
+            # OpenAI calls the batch-priced tier "flex" on live requests. It is
+            # roughly half the speed, so it is only used when OPENAI_USE_FLEX is set.
+            if service_tier == "batch" and config.OPENAI_USE_FLEX and "service_tier" not in skip:
                 params["service_tier"] = "flex"
             # 'none' means "do not reason": omit the parameter entirely.
             if reasoning_effort and reasoning_effort != "none" and "reasoning_effort" not in skip:
@@ -398,7 +399,7 @@ class OpenAIProvider:
         """Promise.all: run concurrently, keep order, re-raise the first failure."""
         if not items:
             return []
-        with ThreadPoolExecutor(max_workers=min(8, len(items))) as pool:
+        with ThreadPoolExecutor(max_workers=min(config.AI_MAX_CONCURRENCY, len(items))) as pool:
             return list(pool.map(fn, items))
 
     # --- methods -------------------------------------------------------------
@@ -585,69 +586,108 @@ class OpenAIProvider:
             })
         return {"title": result["title"], "questions": questions}
 
-    def generate_mock_exam(self, *, text=None, title=None, language="km", count=30, reasoning_effort="medium",
-                           service_tier="default", on_usage=None, **_):
+    # A bank is generated as parallel parts of at most this many questions: one
+    # 30-question response took ~50s, while parts finish in the time of the largest.
+    MOCK_EXAM_PART_SIZE = 10
+
+    @classmethod
+    def _mock_exam_parts(cls, count):
+        """(difficulty, n, focus) parts: exactly the 25/50/25 easy/medium/hard mix, split to <= part size."""
         hard = js_round(count * 0.25)
         easy = js_round(count * 0.25)
         medium = count - hard - easy
-        source = f' from "{title}"' if title else ""
-        prompt = " ".join([
-            f"Write exactly {count} exam questions about this material{source}.",
-            "This is a mock exam, not a revision quiz. Write questions that test whether the",
-            "student can USE the material — apply a rule, compare two ideas, work out what",
-            "happens in a case the document did not state outright — rather than whether they",
-            "can recall one sentence of it.",
-            f"Difficulty must be exactly {easy} easy, {medium} medium and {hard} hard, and",
-            "each question must set difficulty to its own level.",
-            "Spread the questions across the WHOLE document. Do not cluster them on the first",
-            "few pages or on whichever section happens to be the most quotable — a section the",
-            "exam never touches is a section the student will not revise.",
-            "Use only this document — not your own knowledge of the subject, and not any other",
-            "file it may refer to.",
-            "Do not ask about the filename, the class name, source labels, or the fact that a",
-            "document was supplied. Ask about concepts, definitions, procedures and examples",
-            "stated in the document itself.",
-            'For multiple choice use kind "multiple_choice" with exactly 4 options and one',
-            'correctIndex. For true/false use kind "true_false" with exactly 2 options ("True"',
-            'and "False") and correctIndex. For a question better answered in prose use kind',
-            '"short_answer" with an empty options array and correctText.',
-            "Distractors must be plausible to someone who half-understood the material, never",
-            "filler. Vary which position holds the correct option instead of writing the true",
-            "statement first every time. (The server reshuffles as well, so the four options",
-            'must read as a set in any order — never "all of the above", "both A and B", or an',
-            "option that refers to another by letter.)",
-            "EVERY question needs expectedAnswer: the correct answer written out in full, one",
-            "or two sentences, as a student would write it from memory. This applies to",
-            "multiple-choice questions too — the same exam can be sat with the options hidden,",
-            "and a typed answer is marked against this text. A letter or an option number there",
-            "makes the question ungradeable.",
-            "Every question needs a topic and an explanation saying why the right answer is",
-            "right and why the others are wrong, pointing at what the document actually says.",
-        ])
-        result = self._structured(
-            label="generateMockExam", schema_name="mock_exam", schema=MOCK_EXAM_SCHEMA, language=language,
-            material=text, service_tier=service_tier, reasoning_effort=reasoning_effort, on_usage=on_usage,
-            prompt=prompt,
-        )
+        parts = []
+        for difficulty, total in (("easy", easy), ("medium", medium), ("hard", hard)):
+            if total <= 0:
+                continue
+            pieces = max(1, math.ceil(total / cls.MOCK_EXAM_PART_SIZE))
+            for index in range(pieces):
+                n = total // pieces + (1 if index < total % pieces else 0)
+                # Parts of the same difficulty take different stretches of the
+                # document, so two parallel calls do not ask the same question.
+                focus = None if pieces == 1 else (index + 1, pieces)
+                parts.append((difficulty, n, focus))
+        return parts
 
-        questions = []
-        for q in result["questions"]:
-            is_choice = q["kind"] in ("multiple_choice", "true_false")
-            correct = q.get("correctIndex") if is_choice else q.get("correctText")
-            if correct is None:
-                raise RuntimeError(f"generateMockExam: question \"{q['prompt']}\" of kind {q['kind']} has no usable answer")
-            if is_choice and (correct < 0 or correct >= len(q["options"])):
-                raise RuntimeError(f"generateMockExam: correctIndex {correct} is out of range for "
-                                   f"{len(q['options'])} options on \"{q['prompt']}\"")
-            expected = q.get("expectedAnswer")
-            if not isinstance(expected, str) or not expected.strip():
-                raise RuntimeError(f"generateMockExam: question \"{q['prompt']}\" has no expectedAnswer to mark against")
-            questions.append({
-                "kind": q["kind"], "prompt": q["prompt"], "options": q["options"], "correctAnswer": correct,
-                "expectedAnswer": expected.strip(), "difficulty": q["difficulty"], "explanation": q["explanation"],
-                "topic": q["topic"],
-            })
-        return {"title": result["title"], "questions": questions}
+    def generate_mock_exam(self, *, text=None, title=None, language="km", count=30, reasoning_effort="medium",
+                           service_tier="default", on_usage=None, **_):
+        source = f' from "{title}"' if title else ""
+
+        def prompt_for(difficulty, n, focus):
+            if focus:
+                part, pieces = focus
+                coverage = (f"Take these questions from part {part} of {pieces} of the document (divide it into "
+                            f"{pieces} equal consecutive stretches in reading order) and spread them across that "
+                            "stretch — other questions cover the rest.")
+            else:
+                coverage = ("Spread the questions across the WHOLE document. Do not cluster them on the first "
+                            "few pages or on whichever section happens to be the most quotable — a section the "
+                            "exam never touches is a section the student will not revise.")
+            return " ".join([
+                f"Write exactly {n} exam questions about this material{source}, all at {difficulty} difficulty.",
+                "This is a mock exam, not a revision quiz. Write questions that test whether the",
+                "student can USE the material — apply a rule, compare two ideas, work out what",
+                "happens in a case the document did not state outright — rather than whether they",
+                "can recall one sentence of it.",
+                f'Every question must set difficulty to "{difficulty}".',
+                coverage,
+                "Use only this document — not your own knowledge of the subject, and not any other",
+                "file it may refer to.",
+                "Do not ask about the filename, the class name, source labels, or the fact that a",
+                "document was supplied. Ask about concepts, definitions, procedures and examples",
+                "stated in the document itself.",
+                'For multiple choice use kind "multiple_choice" with exactly 4 options and one',
+                'correctIndex. For true/false use kind "true_false" with exactly 2 options ("True"',
+                'and "False") and correctIndex. For a question better answered in prose use kind',
+                '"short_answer" with an empty options array and correctText.',
+                "Distractors must be plausible to someone who half-understood the material, never",
+                "filler. Vary which position holds the correct option instead of writing the true",
+                "statement first every time. (The server reshuffles as well, so the four options",
+                'must read as a set in any order — never "all of the above", "both A and B", or an',
+                "option that refers to another by letter.)",
+                "EVERY question needs expectedAnswer: the correct answer written out in full, one",
+                "or two sentences, as a student would write it from memory. This applies to",
+                "multiple-choice questions too — the same exam can be sat with the options hidden,",
+                "and a typed answer is marked against this text. A letter or an option number there",
+                "makes the question ungradeable.",
+                "Every question needs a topic and an explanation saying why the right answer is",
+                "right and why the others are wrong, pointing at what the document actually says.",
+            ])
+
+        def generate_part(part):
+            difficulty, n, focus = part
+            result = self._structured(
+                label=f"generateMockExam[{difficulty}]", schema_name="mock_exam", schema=MOCK_EXAM_SCHEMA,
+                language=language, material=text, service_tier=service_tier, reasoning_effort=reasoning_effort,
+                on_usage=on_usage, prompt=prompt_for(difficulty, n, focus),
+            )
+            questions = []
+            for q in result["questions"][:n]:
+                is_choice = q["kind"] in ("multiple_choice", "true_false")
+                correct = q.get("correctIndex") if is_choice else q.get("correctText")
+                if correct is None:
+                    raise RuntimeError(f"generateMockExam: question \"{q['prompt']}\" of kind {q['kind']} has no usable answer")
+                if is_choice and (correct < 0 or correct >= len(q["options"])):
+                    raise RuntimeError(f"generateMockExam: correctIndex {correct} is out of range for "
+                                       f"{len(q['options'])} options on \"{q['prompt']}\"")
+                expected = q.get("expectedAnswer")
+                if not isinstance(expected, str) or not expected.strip():
+                    raise RuntimeError(f"generateMockExam: question \"{q['prompt']}\" has no expectedAnswer to mark against")
+                questions.append({
+                    "kind": q["kind"], "prompt": q["prompt"], "options": q["options"], "correctAnswer": correct,
+                    "expectedAnswer": expected.strip(), "difficulty": difficulty, "explanation": q["explanation"],
+                    "topic": q["topic"],
+                })
+            return result["title"], questions
+
+        results = self._parallel(generate_part, self._mock_exam_parts(count))
+        # Interleave the parts so the bank reads as a mixed exam rather than in difficulty blocks.
+        questions, pools = [], [list(qs) for _, qs in results]
+        while any(pools):
+            for pool in pools:
+                if pool:
+                    questions.append(pool.pop(0))
+        return {"title": results[0][0] if results else (title or ""), "questions": questions}
 
     def grade_written_answers(self, *, answers=None, language="km", reasoning_effort="low", on_usage=None, **_):
         answers = answers or []
