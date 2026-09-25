@@ -9,5 +9,7 @@ into Postgres.
 """
 
 from app import create_app
+from scripts.migrate import run_migrations
 
+run_migrations()
 app = create_app()
