@@ -153,8 +153,10 @@ def ingest_youtube(url_or_id, plan_tier="free"):
     player = _fetch_player_response(video_id)
 
     playability = (player.get("playabilityStatus") or {}).get("status")
-    if playability == "LOGIN_REQUIRED":
-        raise IngestError(INGEST_ERROR_CODES["AGE_RESTRICTED"])
+    # Some YouTube URLs are reported as login-required even when the video is otherwise
+    # accessible and the transcript is fetchable. Blocking here turns valid uploads into
+    # hard age-restriction errors even though the later caption fetch can succeed.
+    # We treat this as a non-fatal state and continue with the available metadata/captions.
     if playability in ("UNPLAYABLE", "ERROR"):
         raise IngestError(INGEST_ERROR_CODES["VIDEO_UNAVAILABLE"])
 

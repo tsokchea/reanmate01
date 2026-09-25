@@ -8,7 +8,7 @@ import pytest
 
 from app.ingest.errors import IngestError
 from app.ingest.office import OFFICE_FORMATS, detect_ooxml_format, extract_document, format_for_mime_type
-from app.ingest.youtube import extract_video_id, parse_transcript
+from app.ingest.youtube import extract_video_id, ingest_youtube, parse_transcript
 from app.middleware.errors import ApiError
 from app.middleware.upload import ACCEPTED_MIME_TYPES, LEGACY_FORMAT_ADVICE, file_filter, verify_uploaded_file
 
@@ -261,6 +261,38 @@ def test_unparseable_bodies():
     assert parse_transcript("") == []
     assert parse_transcript("<html><body>nope</body></html>") == []
     assert parse_transcript("{not json") == []
+
+
+def test_ingest_allows_login_required_player_status(monkeypatch):
+    class FakeResponse:
+        def __init__(self, text):
+            self.text = text
+            self.is_success = True
+            self.status_code = 200
+
+    def fake_fetch(video_id):
+        return {
+            "playabilityStatus": {"status": "LOGIN_REQUIRED"},
+            "videoDetails": {
+                "title": "Age-gated but readable",
+                "lengthSeconds": "123",
+                "thumbnail": {"thumbnails": [{"url": "https://example.com/thumb.jpg"}]},
+                "isLiveContent": False,
+            },
+            "captions": {"playerCaptionsTracklistRenderer": {"captionTracks": [{
+                "languageCode": "en",
+                "baseUrl": "https://example.com/captions",
+            }]}}
+        }
+
+    monkeypatch.setattr("app.ingest.youtube._fetch_player_response", fake_fetch)
+    monkeypatch.setattr("app.ingest.youtube.httpx.get", lambda *args, **kwargs: FakeResponse(
+        '<?xml version="1.0" ?><transcript><text start="0" dur="1">hello</text></transcript>'
+    ))
+
+    result = ingest_youtube("https://www.youtube.com/watch?v=jNQXAC9IVRw")
+    assert result["title"] == "Age-gated but readable"
+    assert result["fullText"] == "hello"
 
 
 @pytest.mark.parametrize("value", [
