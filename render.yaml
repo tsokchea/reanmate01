@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: zreanmate-api
+    env: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --worker-class gthread --workers 1 --threads 16 --bind 0.0.0.0:$PORT wsgi:app
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PYTHON_VERSION
+        value: 3.13.3

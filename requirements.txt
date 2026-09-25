@@ -1,0 +1,3 @@
+# Render may run "pip install -r requirements.txt" from repository root.
+# Delegate to the Flask API dependency list in backend/.
+-r backend/requirements.txt
