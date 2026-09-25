@@ -55,6 +55,8 @@ class Config:
             "http://127.0.0.1:5173",
             "http://172.17.208.1:5173",
             "https://z-rean-mate.vercel.app",
+            "https://reanmate01.vercel.app",
+            "https://reanmate01-znrf.vercel.app",
             *_configured_cors,
         ])
     )
